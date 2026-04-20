@@ -1,3 +1,4 @@
+---
 # Self-Config für das ai-review-pipeline Repo (Phase 3.6 Dogfood)
 # Basiert auf schema/config.example.yaml — Self-Dogfooding: dieses Repo reviewt sich selbst.
 version: "1.0"
