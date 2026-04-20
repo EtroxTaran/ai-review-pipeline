@@ -1,0 +1,201 @@
+# NOTE: neuer Workflow (Stage 5), erstellt 2026-04-20
+# Kein Source in ai-portal — dieser Workflow ist Neuland der ai-review-pipeline.
+# cli.py-Einstiegspunkt existiert noch nicht im Package (TODO: implementieren).
+# Interim: direkter Python-Import via -c als Platzhalter.
+
+name: AI Review — AC Validation (Stage 5)
+
+# Stage 5: Acceptance-Criteria-Validation.
+# Prüft ob die PR die Gherkin-ACs aus dem verlinkten Issue abdeckt.
+# Fail-Closed: kein verlinktes Issue oder keine ACs → score niedrig, status=failure.
+# Schreibt Commit-Status `ai-review/ac-validation`, der vom Consensus-Aggregator
+# aggregiert wird.
+#
+# Trigger: pull_request + edited (damit Body-Änderungen mit neuen Issue-Refs
+# sofort re-validiert werden — kein neuer Commit nötig).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ai-review-ac-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write  # Sticky-Comment mit AC-Coverage-Report
+  statuses: write       # Commit-status ai-review/ac-validation
+
+jobs:
+  ac-validation:
+    if: github.event.pull_request.draft == false
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ai-review-pipeline
+        run: pip install ai-review-pipeline
+
+      - name: Run Stage 5 — AC Coverage Validation
+        id: ac_validation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # ANTHROPIC_API_KEY wird für den LLM-Judge gebraucht (Codex primary, Claude second-opinion).
+          # Auf dem r2d2-Runner liegt der Key via OAuth-Store — kein Secret im Repo nötig.
+          # Falls Consumer-Repo keinen self-hosted-Runner mit OAuth nutzt, muss dieser
+          # Secret gesetzt sein: ANTHROPIC_API_KEY
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          TARGET_URL="${GITHUB_SERVER_URL}/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}"
+
+          # TODO: cli.py-Einstiegspunkt implementieren (ai_review_pipeline.cli).
+          # Interim: direkter Modul-Aufruf via Python-Inline-Script.
+          # Nach cli.py-Implementierung ersetzen durch:
+          #   python -m ai_review_pipeline.cli ac-validation \
+          #     --pr "$PR_NUMBER" \
+          #     --sha "$PR_HEAD_SHA" \
+          #     --target-url "$TARGET_URL"
+
+          python3 -c "
+          import os, json, subprocess, sys
+
+          pr_number = os.environ['PR_NUMBER']
+          head_sha = os.environ['PR_HEAD_SHA']
+          gh_token = os.environ['GH_TOKEN']
+          target_url = os.environ.get('TARGET_URL', '')
+          repo = os.environ.get('GITHUB_REPOSITORY', '')
+
+          # Stage ausführen (ohne LLM-Judge — pre-check only bis cli.py fertig)
+          from ai_review_pipeline.stages.ac_validation import validate_ac_coverage, ACValidationInput
+          from ai_review_pipeline.issue_parser import parse_gherkin_ac
+
+          # PR-Body + verlinkte Issues via gh CLI holen
+          pr_meta_raw = subprocess.check_output(
+              ['gh', 'pr', 'view', pr_number, '--json', 'body,closingIssuesReferences,files'],
+              env={**os.environ, 'GH_TOKEN': gh_token}
+          )
+          pr_meta = json.loads(pr_meta_raw)
+          pr_body = pr_meta.get('body') or ''
+          closing_issues = pr_meta.get('closingIssuesReferences') or []
+          changed_files = [f['path'] for f in (pr_meta.get('files') or [])]
+
+          # Diff für LLM-Judge (wird für Pre-Check nicht gebraucht, aber für spätere cli.py)
+          try:
+              pr_diff = subprocess.check_output(
+                  ['gh', 'pr', 'diff', pr_number],
+                  env={**os.environ, 'GH_TOKEN': gh_token}
+              ).decode('utf-8', errors='replace')[:30000]  # cap auf 30k chars
+          except Exception:
+              pr_diff = ''
+
+          # ACs aus verlinkten Issues parsen
+          linked_issues = {}
+          for issue_ref in closing_issues:
+              issue_num = issue_ref.get('number')
+              if not issue_num:
+                  continue
+              try:
+                  issue_raw = subprocess.check_output(
+                      ['gh', 'issue', 'view', str(issue_num), '--json', 'body'],
+                      env={**os.environ, 'GH_TOKEN': gh_token}
+                  )
+                  issue_body = json.loads(issue_raw).get('body') or ''
+                  acs = parse_gherkin_ac(issue_body, issue_number=issue_num)
+                  linked_issues[issue_num] = acs
+              except Exception as e:
+                  print(f'Warning: could not fetch issue #{issue_num}: {e}', file=sys.stderr)
+
+          inp = ACValidationInput(
+              pr_body=pr_body,
+              linked_issues=linked_issues,
+              changed_files=changed_files,
+              pr_diff=pr_diff,
+          )
+
+          # LLM-Judge: None bis cli.py + Judge-Integration fertig (TODO)
+          result = validate_ac_coverage(inp, llm_judge=None)
+
+          # Commit-Status setzen
+          if result.score >= 8:
+              state = 'success'
+          elif result.score >= 5:
+              state = 'pending'  # soft — Consensus fragt nach
+          else:
+              state = 'failure'
+
+          summary = f'AC-Coverage score {result.score}/10 (confidence {result.confidence:.0%})'
+          print(f'AC-Validation: {state} — {summary}')
+          for f in result.findings:
+              print(f'  [{f.severity}] {f.message}')
+
+          import subprocess as sp
+          sp.run([
+              'gh', 'api',
+              f'repos/{repo}/statuses/{head_sha}',
+              '-f', f'state={state}',
+              '-f', 'context=ai-review/ac-validation',
+              '-f', f'description={summary[:140]}',
+              '-f', f'target_url={target_url}',
+          ], env={**os.environ, 'GH_TOKEN': gh_token}, check=True)
+
+          # Findings als PR-Comment (nur bei failure/pending)
+          if state != 'success' and result.findings:
+              errors = [f for f in result.findings if f.severity == 'error']
+              warnings = [f for f in result.findings if f.severity == 'warning']
+              body_lines = ['<!-- ai-review-ac-validation -->', '## AC-Validation Report', '']
+              body_lines.append(f'**Score:** {result.score}/10 | **Status:** {state}')
+              body_lines.append('')
+              if errors:
+                  body_lines.append('### Errors')
+                  for f in errors:
+                      body_lines.append(f'- {f.message}')
+                  body_lines.append('')
+              if warnings:
+                  body_lines.append('### Warnings')
+                  for f in warnings:
+                      body_lines.append(f'- {f.message}')
+                  body_lines.append('')
+              body_lines.append('_Waiver: `/ai-review ac-waiver <reason ≥30 chars>`_')
+              comment_body = '\n'.join(body_lines)
+
+              # Existierenden AC-Comment updaten oder neu posten
+              existing_raw = sp.check_output([
+                  'gh', 'api',
+                  f'repos/{repo}/issues/{pr_number}/comments',
+                  '--jq', '.[] | select(.body | contains(\"ai-review-ac-validation\")) | .id',
+              ], env={**os.environ, 'GH_TOKEN': gh_token}).decode().strip()
+              if existing_raw:
+                  existing_id = existing_raw.split('\n')[0]
+                  sp.run([
+                      'gh', 'api', '-X', 'PATCH',
+                      f'repos/{repo}/issues/comments/{existing_id}',
+                      '-f', f'body={comment_body}',
+                  ], env={**os.environ, 'GH_TOKEN': gh_token}, check=False)
+              else:
+                  sp.run([
+                      'gh', 'pr', 'comment', pr_number,
+                      '--body', comment_body,
+                  ], env={**os.environ, 'GH_TOKEN': gh_token}, check=False)
+
+          # Exit-Code: 0 immer (Status ist per Commit-Status kommuniziert, nicht Exit-Code)
+          sys.exit(0)
+          "
+          TARGET_URL="${GITHUB_SERVER_URL}/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          TARGET_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

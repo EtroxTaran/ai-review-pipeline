@@ -1,0 +1,72 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - github.repository bleibt dynamisch (war bereits expressions, nicht hardcoded)
+#   - Kein Python-Modul-Aufruf hier (reines Shell + gh CLI)
+#   - Kein pull_request_target — Trigger ist pull_request (konform)
+#   - Runs-on bleibt ubuntu-latest (pure Python, kein Runner-Zugriff nötig)
+#   - Keine projekt-spezifischen Änderungen notwendig — vollständig generisch
+
+name: AI Review — Scope Check
+
+# Schnelles Regex-Gate vor den LLM-Stages. Validiert dass die PR genug
+# Kontext hat, damit Reviewer sie fachlich beurteilen können:
+#   ENTWEDER  Closing-Keyword mit Issue-Referenz (Closes/Fixes/Resolves #N)
+#   ODER      strukturiertes Body-Template (## Summary + ## Why ODER ## Test plan)
+#
+# Ziel: vermeidet dass ein PR mit reinem Titel und leerem Body LLM-Budget
+# verbrennt, während der Reviewer raten muss was die Intention war.
+# Posted `ai-review/scope-check` als Commit-Status — nicht required auf main
+# (informational only), aber erscheint sichtbar im PR-UI.
+#
+# Läuft auf ubuntu-latest (NICHT self-hosted) — pure Python, ~10s.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: ai-review-scope-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  scope-check:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate PR body shape
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')
+          STATE="success"
+          DESC="PR-Body hat Issue-Ref oder Summary-Template"
+          # 1. Closing-Keyword + Issue-Nummer vorhanden?
+          if printf '%s' "$BODY" | grep -qiE '\b(closes?|closed|fix(es|ed)?|resolv(es|ed)?)\s*:?\s*#[0-9]+'; then
+            DESC="Issue-Referenz gefunden"
+          # 2. ODER strukturierter Body (## Summary + (Why ODER Test plan))?
+          elif printf '%s' "$BODY" | grep -qE '^## Summary' \
+            && printf '%s' "$BODY" | grep -qE '^## (Why|Test plan)'; then
+            DESC="Strukturierter PR-Body (Summary + Why/Test-plan)"
+          else
+            STATE="failure"
+            DESC="Fehlt: Closing-Keyword (Closes/Fixes #N) ODER ## Summary+## Why/## Test plan"
+          fi
+          echo "Resolved state: $STATE — $DESC"
+          gh api "repos/${{ github.repository }}/statuses/$HEAD_SHA" \
+            -f state="$STATE" \
+            -f context="ai-review/scope-check" \
+            -f description="$DESC" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

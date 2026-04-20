@@ -1,0 +1,88 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - github.repository bleibt dynamisch (war bereits ${{ github.repository }})
+#   - Hardcoded `${{ github.server_url }}/${{ github.repository }}/...` target_url
+#     bleibt korrekt da github context-expressionen sind, nicht hardcoded strings
+#   - Kein Python-Modul-Aufruf hier (reines Shell-Script via gh CLI)
+#   - Kein pull_request_target — Trigger ist schedule + workflow_dispatch (konform)
+#   - Runs-on bleibt ubuntu-latest (kein Runner-Zugriff nötig, nur gh CLI)
+
+name: AI Review — Auto-Escalate Stale Nachfragen
+
+# Läuft alle 5 Minuten + on-demand. Sucht PRs mit
+# `ai-review/consensus = pending` (description beginnend mit
+# "Code-review needs human ACK"), älter als 30min, ohne Response vom
+# PR-Author → eskaliert zu consensus=failure.
+#
+# Das ist der non-blocking Fallback zum Nachfrage-Pfad — wir warten NICHT
+# im Runner auf menschliche Antwort (würde Runner-Zeit verschwenden).
+# Stattdessen: Consensus bleibt pending, separater Cron cleant auf.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # alle 5 Minuten
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: read
+
+jobs:
+  escalate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Find + escalate stale soft-consensus PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Alle offenen PRs durchgehen
+          gh pr list --repo "$REPO" --state open --limit 50 \
+            --json number,headRefOid,author,updatedAt --jq '.[]' |
+          while IFS= read -r pr; do
+            pr_num=$(echo "$pr" | python3 -c "import json,sys;print(json.load(sys.stdin)['number'])")
+            head_sha=$(echo "$pr" | python3 -c "import json,sys;print(json.load(sys.stdin)['headRefOid'])")
+            author=$(echo "$pr" | python3 -c "import json,sys;print(json.load(sys.stdin)['author']['login'])")
+
+            # Aktuellen consensus-status holen
+            status_data=$(gh api "repos/$REPO/commits/$head_sha/status" \
+              --jq '.statuses[] | select(.context=="ai-review/consensus") | {state,description,updated_at}' \
+              | head -c 2000 || echo "")
+            [ -z "$status_data" ] && continue
+
+            state=$(echo "$status_data" | python3 -c "import json,sys;print(json.load(sys.stdin).get('state',''))")
+            desc=$(echo "$status_data" | python3 -c "import json,sys;print(json.load(sys.stdin).get('description',''))")
+            updated=$(echo "$status_data" | python3 -c "import json,sys;print(json.load(sys.stdin).get('updated_at',''))")
+
+            # Nur pending + Nachfrage-Descriptions betrachten
+            if [ "$state" != "pending" ]; then continue; fi
+            case "$desc" in
+              "Code-review needs human ACK"*) : ;;
+              *) continue ;;
+            esac
+
+            # Alter? (30 min timeout)
+            now_epoch=$(date -u +%s)
+            upd_epoch=$(date -u -d "$updated" +%s 2>/dev/null || echo 0)
+            age=$((now_epoch - upd_epoch))
+            if [ "$age" -lt 1800 ]; then
+              echo "PR #$pr_num: pending nachfrage, age ${age}s — noch nicht stale"
+              continue
+            fi
+
+            # Prüfen ob PR-Author /ai-review approve|retry gepostet hat
+            # NACH dem Nachfrage-Sticky. Der nachfrage.yml handler sollte
+            # die Approve/Retry bereits verarbeitet haben — wenn wir hier sind,
+            # heißt das keine Antwort kam.
+            echo "PR #$pr_num: age ${age}s > 1800s → auto-escalate"
+            target="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh api "repos/$REPO/statuses/$head_sha" \
+              -f state=failure \
+              -f context="ai-review/consensus" \
+              -f description="Auto-escalated: 30min timeout on soft-consensus Nachfrage" \
+              -f target_url="$target"
+          done

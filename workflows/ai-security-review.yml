@@ -1,0 +1,68 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - python3 -m scripts.ai-review.security_review → python -m ai_review_pipeline.stages.security_review
+#   - TELEGRAM_NOTIFICATION_WEBHOOK → DISCORD_NOTIFICATION_WEBHOOK
+#   - github.repository bleibt dynamisch
+#   - scripts/ai-review-preflight.sh bleibt — muss im Consumer-Repo mitgeliefert werden
+#   - Comment "Für das Lesen des triggernden workflow_run-Kontexts" entfernt
+#     (workflow_run-Trigger wurde in Wave 2c bereits abgelöst)
+#   - Kein pull_request_target verwendet (war schon pull_request — konform)
+
+name: AI Security Review (Stage 2)
+
+# Stage 2: Gemini 2.5 Pro, geerdet auf einem semgrep-baseline-Scan.
+# Läuft PARALLEL zu Stage 1 + 3, direkt auf pull_request.synchronize.
+# Security-Stage ist `review-only` (skip_fix_loop default=True in
+# security_review.py). Kein Fix-Commit-Race mit Stage 1.
+# Schreibt Commit-Status `ai-review/security`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  # Pro-PR-Gruppe wie Stage 1. cancel-in-progress hier TRUE weil Security
+  # keinen Fix-Loop hat, der sich selbst killen könnte — neuere Runs
+  # ersetzen ältere sauber.
+  group: ai-security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+  checks: write
+  actions: read
+
+jobs:
+  security-review:
+    if: github.event.pull_request.draft == false
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 20
+    steps:
+      # Security ist `review-only` (kein Fix-Loop in security_review.py),
+      # also gibt es keine [ai-fix] security:-Commits mehr. Der bisherige
+      # commit-message-Guard ist nicht nötig — aber wir wollen auch
+      # [ai-fix] code:-Commits von Stage 1 NICHT ignorieren (die müssen
+      # security auf dem konvergierten Stand nochmal prüfen).
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Preflight — CLI OAuth presence
+        run: bash scripts/ai-review-preflight.sh security
+
+      - name: Run Stage 2 — Gemini security review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+        run: |
+          python -m ai_review_pipeline.stages.security_review \
+            --pr ${{ github.event.pull_request.number }} \
+            --max-iterations 2 \
+            --skip-fix-loop

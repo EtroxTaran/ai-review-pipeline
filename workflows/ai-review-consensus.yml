@@ -1,0 +1,126 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - python3 -m scripts.ai-review.consensus → python -m ai_review_pipeline.stages.consensus
+#   - TELEGRAM_NOTIFICATION_WEBHOOK → DISCORD_NOTIFICATION_WEBHOOK
+#   - github.repository bleibt dynamisch (kein hardcoded EtroxTaran/ai-portal)
+#   - Poll-Stages-Liste erweitert auf code|code-cursor|security|design|ac-validation
+#     (Stage 5 ist neu; consensus aggregiert jetzt alle 5)
+#   - Kein pull_request_target verwendet (war schon pull_request — konform)
+
+name: AI Review Consensus
+
+# Aggregiert alle Stage-Statuses (ai-review/{code,code-cursor,security,design,ac-validation})
+# in einen einzigen Required-Status `ai-review/consensus`.
+# Regel: ≥2 success (skipped reduziert Denominator) → consensus=success.
+#
+# Trigger auf `pull_request` (wie die Stages) + Fallback via `check_suite`
+# für späte Stage-Abschlüsse. Der Consensus-Job macht einen Poll-and-retry:
+# wenn Stages pending, wartet er bis zu 20 min in 30s-Intervallen.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Fallback: wenn der PR-Event schon fertig war, aber eine Stage später
+  # ihren Status postet (Fix-Loop-Push o.ä.), re-triggert check_suite.
+  check_suite:
+    types: [completed]
+
+concurrency:
+  group: ai-review-consensus-${{ github.event.pull_request.number || github.event.check_suite.head_sha }}
+  # Nicht canceln — jeder Consensus-Run muss die aktuellsten Status-Werte
+  # aggregieren, auch wenn ein früherer Run parallel noch läuft.
+  cancel-in-progress: false
+
+permissions:
+  statuses: write
+  checks: read
+  actions: read
+  pull-requests: read
+  contents: read
+
+jobs:
+  consensus:
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 22
+    steps:
+      - name: Resolve PR + head SHA
+        id: pr_head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Case 1: pull_request event → direkt aus github.event
+          if [ -n "${{ github.event.pull_request.number || '' }}" ]; then
+            PR="${{ github.event.pull_request.number }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            # Case 2: check_suite event — resolve PR aus head_sha
+            HEAD_SHA="${{ github.event.check_suite.head_sha }}"
+            PR=$(gh pr list --state open --search "$HEAD_SHA" --json number --jq '.[0].number // empty')
+          fi
+          if [ -z "${PR:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+            echo "No open PR/SHA resolvable — skipping consensus."
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #$PR at $HEAD_SHA"
+
+      - name: Checkout
+        if: steps.pr_head.outputs.sha
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr_head.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        if: steps.pr_head.outputs.sha
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ai-review-pipeline
+        if: steps.pr_head.outputs.sha
+        run: pip install ai-review-pipeline
+
+      - name: Poll for stage completion + aggregate
+        if: steps.pr_head.outputs.sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          PR_HEAD_SHA: ${{ steps.pr_head.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr_head.outputs.pr }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          # Warten bis alle Stages terminal sind ODER 18 min abgelaufen.
+          # Die Stages haben selbst ein Hard-Wall; wir pollen alle 30s.
+          TARGET_URL="${GITHUB_SERVER_URL}/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}"
+
+          for attempt in $(seq 1 36); do
+            STATES=$(gh api "repos/${{ github.repository }}/commits/${PR_HEAD_SHA}/status" \
+              --jq '[.statuses[] | select(.context | test("^ai-review/(code|code-cursor|security|design|ac-validation)$")) | .state] | unique')
+            echo "Attempt $attempt: states=$STATES"
+            # Wenn KEIN 'pending' mehr → aggregate
+            if ! echo "$STATES" | grep -q '"pending"'; then
+              echo "All stages terminal, running consensus aggregator..."
+              python -m ai_review_pipeline.stages.consensus \
+                --sha "$PR_HEAD_SHA" \
+                --pr "$PR_NUMBER" \
+                --target-url "$TARGET_URL"
+              exit 0
+            fi
+            sleep 30
+          done
+
+          # Timeout — wir setzen consensus=failure mit Erklärung, damit
+          # der PR nicht ewig pending bleibt.
+          gh api "repos/${{ github.repository }}/statuses/${PR_HEAD_SHA}" \
+            -f state=failure \
+            -f context="ai-review/consensus" \
+            -f description="Consensus timeout nach 18min — Stages nie terminal" \
+            -f target_url="$TARGET_URL"
+          exit 1
