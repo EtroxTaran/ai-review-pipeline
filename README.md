@@ -43,12 +43,15 @@ Plan: `~/.claude/plans/reports-projects-ai-portal-docs-v2-40-a-iridescent-flask.
 - [x] Phase 3.3 Wave 3 — `consensus.py`, `nachfrage.py`, `fix_loop.py`, `auto_fix.py`
 - [x] Phase 3.3 Wave 4a — Stage-Runner: `code_review.py`, `cursor_review.py`, `security_review.py`, `design_review.py`
 - [x] Phase 3.3 Wave 4b — `stage.py` Orchestrator (StageConfig + build_arg_parser + run_stage, 52 Tests)
+- [x] Phase 3.5b — `cli.py` unified console script (24 Tests, cov 83%) + 7 Workflows auf `ai-review` CLI migriert
+- [x] Phase 3.6-prep — Dogfooding-Scaffolding (CI, dogfood.yml, Self-Config, PR/Issue-Templates, Smoke-Script)
+- [x] Phase 5 Legacy-Cleanup (pre-emptive) — `telegram_alert.py` entfernt, `consensus.py` + `stage.py` auf `discord_notify` umgestellt
 - [ ] Phase 3.2 — GitHub-Repo `EtroxTaran/ai-review-pipeline` anlegen + push (braucht User-Go)
-- [ ] Phase 3.5b — `cli.py` für `ai-review` Console-Script (vereinfacht `ai-review-ac-validation.yml`)
-- [ ] Phase 3.6 — Dogfooding: Pipeline reviewt sich selbst
-- [x] Phase 5 Legacy-Cleanup — `telegram_alert.py` entfernt, `consensus.py` + `stage.py` auf `discord_notify` umgestellt
+- [ ] Phase 3.6 — Dogfooding-Live-Run (braucht Phase 3.2)
+- [ ] Phase 4 — ai-portal Shadow-Mode
+- [ ] Phase 5 — Cutover + 2. Projekt
 
-**Current main:** pytest green · Coverage ≥80% · stdlib + pyyaml + requests only.
+**Current main:** 548/548 pytest green · Coverage 90.67% · stdlib + pyyaml + requests only.
 
 ## Module-Inventar (16 extrahiert + 1 neu Stage 5)
 
