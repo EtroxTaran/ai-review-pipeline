@@ -1,0 +1,93 @@
+name: Bug Report
+description: Report a bug with reproduction steps and Gherkin fix-criteria
+title: "fix: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Bug Report
+
+        Alle Felder ausfüllen. Die AC (Gherkin) beschreibt das *gewünschte Fix-Verhalten* —
+        nicht den Bug. So kann Stage 5 (AC-Validation) prüfen, ob der PR den Fix wirklich liefert.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: "Was ist passiert? Welche Komponente / welcher Stage ist betroffen?"
+      placeholder: "Bei `ai-review stage security` passiert ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: "Was sollte stattdessen passieren?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: "Minimal reproduzierbare Schrittfolge."
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: "Python-Version, OS, ai-review-pipeline-Version, relevante Config-Keys."
+      placeholder: "Python 3.12.2 · Ubuntu 25.10 · ai-review-pipeline 0.1.0 · ruff 0.6.x"
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria (Gherkin)
+      description: "Gherkin beschreibt das FIX-Verhalten. Mapping 1:1 auf Tests."
+      value: |
+        ```gherkin
+        Scenario: <Kurztitel — fix behavior>
+          Given <buggy Vorbedingung>
+          When <Aktion, die vorher fehlschlug>
+          Then <erwartetes Ergebnis nach Fix>
+
+        Scenario: Regression-Guard
+          Given <Ausgangssituation>
+          When <Aktion>
+          Then <der Bug tritt nicht erneut auf>
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: Definition of Done
+      value: |
+        - [ ] Regression-Test für den Bug (failing vor Fix, green danach)
+        - [ ] Root-Cause im PR-Body dokumentiert
+        - [ ] PR mit `Closes #<this>` verlinkt
+        - [ ] AI-Review-Pipeline Consensus ≥ 8
+    validations:
+      required: true
+
+  - type: input
+    id: priority
+    attributes:
+      label: Priority
+      description: "P0 (critical — hotfix), P1 (high), P2 (medium), P3 (low)"
+      value: P2
+    validations:
+      required: false

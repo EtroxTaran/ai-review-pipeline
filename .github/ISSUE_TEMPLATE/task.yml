@@ -1,0 +1,75 @@
+name: Task / Chore / Refactor / Docs
+description: Technical task that isn't a user-facing feature or bug
+title: "chore: "
+labels:
+  - task
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Task
+
+        Für Refactor, Chore, Docs, Infra, Tech-Debt. Für user-facing Features → feature.yml.
+        Gherkin-AC ist auch hier bevorzugt, Tasklist als Fallback bei rein technischen Tasks.
+
+  - type: textarea
+    id: what_and_why
+    attributes:
+      label: What & Why
+      description: "Was soll getan werden und warum? Welches Problem löst es?"
+      placeholder: "Upgrade Python 3.11 → 3.12 ... weil TDD-Zyklus mit neuem Coverage-Plugin ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: "Gherkin bevorzugt. Für rein technische Tasks (keine Verhaltensänderung) ist eine Tasklist akzeptabel."
+      value: |
+        ```gherkin
+        Scenario: <Kurztitel>
+          Given <Ausgangszustand>
+          When <technische Aktion>
+          Then <Zielzustand>
+        ```
+
+        oder (nur bei rein technischen Tasks ohne Verhaltensänderung):
+
+        - [ ] Schritt 1
+        - [ ] Schritt 2
+        - [ ] Schritt 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: Definition of Done
+      value: |
+        - [ ] Änderung umgesetzt und lokal verifiziert
+        - [ ] Tests wo sinnvoll (bei Refactor: bestehende Tests grün)
+        - [ ] `scripts/smoke_cli.sh` sauber
+        - [ ] PR mit `Closes #<this>` verlinkt
+        - [ ] AI-Review-Pipeline Consensus ≥ 8
+    validations:
+      required: true
+
+  - type: input
+    id: priority
+    attributes:
+      label: Priority
+      description: "P0 (critical), P1 (high), P2 (medium), P3 (low)"
+      value: P3
+    validations:
+      required: false
+
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: "XS (<1h), S (<4h), M (<1d), L (<3d), XL (>3d)"
+      value: S
+    validations:
+      required: false
