@@ -1,0 +1,115 @@
+# JSON Schema (YAML-dialect) für .ai-review/config.yaml
+# Projekte, die das pip-Paket `ai-review-pipeline` konsumieren, validieren ihre
+# lokale Config gegen diese Datei. Fail-Closed bei Schema-Violations.
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://github.com/EtroxTaran/ai-review-pipeline/schema/config.schema.yaml"
+title: ai-review-pipeline project config
+type: object
+additionalProperties: false
+required: [version, stages, notifications]
+properties:
+  version:
+    type: string
+    pattern: "^1\\.[0-9]+$"
+    description: Config-Schema-Version. Currently 1.0.
+
+  reviewers:
+    type: object
+    additionalProperties: false
+    description: Modell-Overrides pro Stage. Falls nicht gesetzt → globale Defaults.
+    properties:
+      codex:   { type: string, default: "gpt-5" }
+      cursor:  { type: string, default: "composer-2" }
+      gemini:  { type: string, default: "gemini-2.5-pro" }
+      claude:  { type: string, default: "claude-opus-4-7" }
+
+  stages:
+    type: object
+    additionalProperties: false
+    required: [code_review, security, design, ac_validation]
+    properties:
+      code_review:
+        $ref: "#/$defs/stageConfig"
+      cursor_review:
+        $ref: "#/$defs/stageConfig"
+      security:
+        $ref: "#/$defs/stageConfig"
+      design:
+        $ref: "#/$defs/stageConfig"
+      ac_validation:
+        allOf:
+          - $ref: "#/$defs/stageConfig"
+          - type: object
+            properties:
+              judge_model:
+                type: string
+                description: LLM-Modell für AC-Judge (primary). Default codex.
+                default: "gpt-5"
+              second_opinion_model:
+                type: string
+                default: "claude-opus-4-7"
+              min_coverage:
+                type: number
+                minimum: 0
+                maximum: 1
+                default: 1.0
+
+  consensus:
+    type: object
+    additionalProperties: false
+    properties:
+      success_threshold:
+        type: number
+        minimum: 5
+        maximum: 10
+        default: 8
+        description: avg_score >= success_threshold ⇒ pipeline success.
+      soft_threshold:
+        type: number
+        minimum: 1
+        maximum: 10
+        default: 5
+        description: soft_threshold <= avg_score < success_threshold ⇒ nachfrage.
+      fail_closed_on_missing_stage:
+        type: boolean
+        default: true
+
+  notifications:
+    type: object
+    additionalProperties: false
+    required: [target]
+    properties:
+      target:
+        type: string
+        enum: [discord, none]
+      discord:
+        type: object
+        additionalProperties: false
+        required: [channel_id]
+        properties:
+          channel_id: { type: string }
+          mention_role: { type: string, default: "@here" }
+          sticky_message: { type: boolean, default: true }
+
+  waivers:
+    type: object
+    additionalProperties: false
+    properties:
+      min_reason_length:
+        type: integer
+        minimum: 20
+        default: 30
+      allowed_labels:
+        type: array
+        items: { type: string }
+        default: ["pipeline-bootstrap"]
+
+$defs:
+  stageConfig:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled: { type: boolean, default: true }
+      blocking: { type: boolean, default: true }
+      prompt_file: { type: string }
+      timeout_seconds: { type: integer, minimum: 60, default: 600 }

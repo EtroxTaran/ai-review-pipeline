@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# gh-ai-review — GitHub CLI Extension für ai-review-pipeline
+#
+# Commands:
+#   gh ai-review install    — kopiert Workflow-Templates + .ai-review/config.yaml
+#   gh ai-review verify     — prüft Installation + PAT-Scopes + Runner-Label
+#   gh ai-review uninstall  — entfernt Workflows, behält config.yaml
+#   gh ai-review update     — holt neueste Workflow-Templates aus pip-Paket
+#
+# Required: gh ≥ 2.45, python3, yq.
+set -euo pipefail
+
+readonly VERSION="0.1.0"
+readonly PACKAGE_REPO="EtroxTaran/ai-review-pipeline"
+readonly TEMPLATE_DIR=".github/workflows"
+readonly CONFIG_DIR=".ai-review"
+
+die() {
+  printf 'gh-ai-review: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+cmd_install() {
+  require_cmd git
+  require_cmd python3
+  [[ -d .git ]] || die "run inside a git repository"
+
+  mkdir -p "$TEMPLATE_DIR" "$CONFIG_DIR"
+
+  local pkg_dir
+  pkg_dir="$(python3 -c 'import ai_review_pipeline, pathlib; print(pathlib.Path(ai_review_pipeline.__file__).parent.parent.parent)')" \
+    || die "ai-review-pipeline pip package not installed. Run: pip install ai-review-pipeline"
+
+  if [[ -d "${pkg_dir}/workflows" ]]; then
+    cp -n "${pkg_dir}/workflows/"*.yml "$TEMPLATE_DIR/" 2>/dev/null || true
+  fi
+
+  if [[ ! -f "${CONFIG_DIR}/config.yaml" ]]; then
+    cp "${pkg_dir}/schema/config.example.yaml" "${CONFIG_DIR}/config.yaml"
+    echo "created ${CONFIG_DIR}/config.yaml from example"
+  fi
+
+  echo "install ok. Next steps:"
+  echo "  1. Edit ${CONFIG_DIR}/config.yaml → set discord.channel_id"
+  echo "  2. gh secret set DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID"
+  echo "  3. git add . && git commit -m 'chore: install ai-review-pipeline v${VERSION}'"
+}
+
+cmd_verify() {
+  require_cmd gh
+  local ok=1
+
+  [[ -f "${CONFIG_DIR}/config.yaml" ]] || { echo "fail: ${CONFIG_DIR}/config.yaml missing"; ok=0; }
+  [[ -d "${TEMPLATE_DIR}" ]] && ls "${TEMPLATE_DIR}"/ai-*.yml >/dev/null 2>&1 \
+    || { echo "fail: no ai-*.yml workflows in ${TEMPLATE_DIR}"; ok=0; }
+
+  # PAT-Scopes: workflow + repo benötigt
+  local scopes
+  scopes="$(gh auth status --show-token 2>&1 | grep -oE "'[^']*'" | head -1 || true)"
+  if ! echo "$scopes" | grep -q workflow; then
+    echo "warn: PAT missing 'workflow' scope"
+  fi
+
+  # Runner-Label-Check: self-hosted Labels 'r2d2' + 'ai-review'
+  if ! gh api repos/:owner/:repo/actions/runners 2>/dev/null | grep -q r2d2; then
+    echo "warn: no 'r2d2' self-hosted runner registered for this repo"
+  fi
+
+  if [[ $ok -eq 1 ]]; then
+    echo "verify ok (v${VERSION})"
+  else
+    exit 1
+  fi
+}
+
+cmd_uninstall() {
+  [[ -d .git ]] || die "run inside a git repository"
+  local yml
+  for yml in "$TEMPLATE_DIR"/ai-*.yml; do
+    [[ -f "$yml" ]] && rm "$yml"
+  done
+  echo "uninstall ok. Kept ${CONFIG_DIR}/ (manual removal if desired)."
+}
+
+cmd_update() {
+  require_cmd pip
+  pip install --upgrade "ai-review-pipeline"
+  cmd_install
+}
+
+cmd_version() {
+  echo "gh ai-review v${VERSION} (package: ${PACKAGE_REPO})"
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    install)   cmd_install "$@" ;;
+    verify)    cmd_verify "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    update)    cmd_update "$@" ;;
+    version|--version|-v) cmd_version ;;
+    help|--help|-h|"")
+      cat <<EOF
+gh ai-review — manage ai-review-pipeline in a GitHub repo
+
+Usage: gh ai-review <command>
+
+Commands:
+  install    Copy workflow templates + seed .ai-review/config.yaml
+  verify     Check workflow files, PAT scopes, runner labels
+  uninstall  Remove ai-*.yml workflow files (keeps config)
+  update     Upgrade pip package + re-install workflows
+  version    Print version
+EOF
+      ;;
+    *) die "unknown command: $cmd (try: gh ai-review help)" ;;
+  esac
+}
+
+main "$@"
