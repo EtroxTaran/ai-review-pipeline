@@ -821,5 +821,224 @@ class MainFunctionTests(unittest.TestCase):
         self.assertEqual(fake_gh.written[0]["target_url"], "https://example.com/run/1")
 
 
+class StatusContextScopedAggregateTests(unittest.TestCase):
+    """Scenario 2 (Red): aggregate() respects status_context_prefix filter.
+
+    Nur Statuses mit Prefix 'ai-review-v2/' werden aggregiert, und der
+    Consensus-Status wird unter dem angegebenen status_context geschrieben.
+    """
+
+    def test_aggregate_filters_statuses_by_prefix(self) -> None:
+        # Arrange: FakeGh liefert gemischte Statuses — einige ai-review/,
+        # einige ai-review-v2/. aggregate() soll nur v2-Statuses nehmen.
+        class FakeMixedGh:
+            """Liefert Status-Mix: ai-review/* und ai-review-v2/*."""
+
+            def __init__(self) -> None:
+                self.written: list[dict] = []
+
+            def get_commit_statuses(self, sha: str) -> dict[str, str]:
+                return {
+                    "ai-review/code": "failure",          # alt — soll ignoriert werden
+                    "ai-review/security": "failure",       # alt — soll ignoriert werden
+                    "ai-review-v2/code": "success",        # neu
+                    "ai-review-v2/code-cursor": "success", # neu
+                    "ai-review-v2/security": "success",    # neu
+                    "ai-review-v2/design": "success",      # neu
+                }
+
+            def set_commit_status(
+                self, *, sha: str, context: str, state: str,
+                description: str, target_url: str | None = None,
+            ) -> None:
+                self.written.append({
+                    "sha": sha, "context": context,
+                    "state": state, "description": description,
+                })
+
+        gh = FakeMixedGh()
+
+        # Act: mit status_context_prefix filtern
+        state, desc = consensus.aggregate(
+            sha="abc",
+            gh=gh,
+            status_context_prefix="ai-review-v2",
+            status_context="ai-review-v2/consensus",
+        )
+
+        # Assert: consensus ist success (alle v2-Stages grün, alte werden ignoriert)
+        self.assertEqual(state, "success")
+
+    def test_aggregate_writes_consensus_to_custom_context(self) -> None:
+        # Arrange: alle v2-Stages grün
+        class FakeV2Gh:
+            def __init__(self) -> None:
+                self.written: list[dict] = []
+
+            def get_commit_statuses(self, sha: str) -> dict[str, str]:
+                return {
+                    "ai-review-v2/code": "success",
+                    "ai-review-v2/code-cursor": "success",
+                    "ai-review-v2/security": "success",
+                    "ai-review-v2/design": "success",
+                }
+
+            def set_commit_status(
+                self, *, sha: str, context: str, state: str,
+                description: str, target_url: str | None = None,
+            ) -> None:
+                self.written.append({
+                    "sha": sha, "context": context,
+                    "state": state, "description": description,
+                })
+
+        gh = FakeV2Gh()
+
+        # Act
+        consensus.aggregate(
+            sha="abc",
+            gh=gh,
+            status_context_prefix="ai-review-v2",
+            status_context="ai-review-v2/consensus",
+        )
+
+        # Assert: der Consensus-Status wird unter ai-review-v2/consensus geschrieben
+        contexts_written = [w["context"] for w in gh.written]
+        self.assertIn("ai-review-v2/consensus", contexts_written)
+        # Und NICHT unter dem Standard-Context
+        self.assertNotIn(common.STATUS_CONSENSUS, contexts_written)
+
+
+class StatusContextMainArgsTests(unittest.TestCase):
+    """Scenario 2 (Red): consensus.main() akzeptiert --status-context und
+    --status-context-prefix Argumente und propagiert sie an aggregate()."""
+
+    def test_main_accepts_status_context_and_prefix_args(self) -> None:
+        import unittest.mock as mock
+
+        fake_gh = FakeStatusGh({
+            "ai-review-v2/code": "success",
+            "ai-review-v2/code-cursor": "success",
+            "ai-review-v2/security": "success",
+            "ai-review-v2/design": "success",
+        })
+        with mock.patch("ai_review_pipeline.common.GhClient", return_value=fake_gh):
+            result = consensus.main([
+                "--sha", "deadbeef",
+                "--status-context", "ai-review-v2/consensus",
+                "--status-context-prefix", "ai-review-v2",
+            ])
+        # Exit 0 wenn consensus success oder pending
+        self.assertEqual(result, 0)
+
+    def test_main_status_context_written_to_custom_context(self) -> None:
+        import unittest.mock as mock
+
+        fake_gh = FakeStatusGh({
+            "ai-review-v2/code": "success",
+            "ai-review-v2/code-cursor": "success",
+            "ai-review-v2/security": "success",
+            "ai-review-v2/design": "success",
+        })
+        with mock.patch("ai_review_pipeline.common.GhClient", return_value=fake_gh):
+            consensus.main([
+                "--sha", "deadbeef",
+                "--status-context", "ai-review-v2/consensus",
+                "--status-context-prefix", "ai-review-v2",
+            ])
+        # Consensus muss unter ai-review-v2/consensus geschrieben worden sein
+        contexts_written = [w["context"] for w in fake_gh.written]
+        self.assertIn("ai-review-v2/consensus", contexts_written)
+
+
+class DiscordChannelOverrideTests(unittest.TestCase):
+    """Scenario 3 (Red): consensus.main() respektiert --discord-channel und --no-ping."""
+
+    def _make_disagreement_gh(self) -> FakeStatusDetailGh:
+        """Liefert Status-Setup, der Disagreement triggert (code vs code-cursor)."""
+        return FakeStatusDetailGh({
+            common.STATUS_CODE: ("success", "score: 9/10 (green)"),
+            common.STATUS_CODE_CURSOR: ("failure", "score: 3/10 (hard)"),
+            common.STATUS_SECURITY: ("success", "score: 9/10 (green)"),
+            common.STATUS_DESIGN: ("success", "score: 9/10 (green)"),
+        })
+
+    def test_discord_channel_override_passed_to_notify_discord(self) -> None:
+        import unittest.mock as mock
+
+        gh = self._make_disagreement_gh()
+        captured_payloads: list = []
+
+        def fake_notify(payload, config, **kwargs):
+            captured_payloads.append(payload)
+            return True
+
+        with mock.patch("ai_review_pipeline.common.GhClient", return_value=gh), \
+             mock.patch("ai_review_pipeline.discord_notify.notify_discord", side_effect=fake_notify):
+            consensus.main([
+                "--sha", "deadbeef",
+                "--pr", "42",
+                "--discord-channel", "1234",
+                "--no-ping",
+            ])
+
+        # Assert: notify_discord wurde aufgerufen (Disagreement-Pfad)
+        # und channel_id="1234" im Payload
+        self.assertTrue(len(captured_payloads) > 0, "notify_discord must have been called")
+        discord_calls_with_channel = [
+            p for p in captured_payloads if p.channel_id == "1234"
+        ]
+        self.assertTrue(
+            len(discord_calls_with_channel) > 0,
+            f"Expected channel_id='1234' in at least one payload, got: {captured_payloads}",
+        )
+
+    def test_no_ping_suppresses_mention_role(self) -> None:
+        import unittest.mock as mock
+
+        gh = self._make_disagreement_gh()
+        captured_payloads: list = []
+
+        def fake_notify(payload, config, **kwargs):
+            captured_payloads.append(payload)
+            return True
+
+        with mock.patch("ai_review_pipeline.common.GhClient", return_value=gh), \
+             mock.patch("ai_review_pipeline.discord_notify.notify_discord", side_effect=fake_notify):
+            consensus.main([
+                "--sha", "deadbeef",
+                "--pr", "42",
+                "--discord-channel", "1234",
+                "--no-ping",
+            ])
+
+        # Assert: mention_role ist leer/None in ALLEN Payloads wenn --no-ping gesetzt
+        # (kein @here, kein @role-mention)
+        for p in captured_payloads:
+            self.assertFalse(
+                p.mention_role and p.mention_role.strip(),
+                f"Expected empty mention_role with --no-ping, got: {p.mention_role!r}",
+            )
+
+    def test_discord_channel_override_in_notify_discord_payload(self) -> None:
+        """discord_notify.DiscordNotifyPayload unterstützt channel_id-Override."""
+        from ai_review_pipeline.discord_notify import DiscordNotifyPayload
+        payload = DiscordNotifyPayload(
+            event_type="disagreement",
+            pr_url="https://github.com/example/repo/pull/1",
+            repo="example/repo",
+            pr_number=1,
+            consensus_score=5.0,
+            stage_scores={},
+            findings=[],
+            button_actions=[],
+            channel_id="1234",
+            mention_role="",  # leer = kein ping
+            sticky_message=None,
+        )
+        self.assertEqual(payload.channel_id, "1234")
+        self.assertEqual(payload.mention_role, "")
+
+
 if __name__ == "__main__":
     unittest.main()
