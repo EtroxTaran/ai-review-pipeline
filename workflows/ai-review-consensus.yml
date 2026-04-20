@@ -6,6 +6,8 @@
 #   - Poll-Stages-Liste erweitert auf code|code-cursor|security|design|ac-validation
 #     (Stage 5 ist neu; consensus aggregiert jetzt alle 5)
 #   - Kein pull_request_target verwendet (war schon pull_request — konform)
+# Wave 5 (2026-04-20):
+#   - python -m ai_review_pipeline.stages.consensus → ai-review consensus
 
 name: AI Review Consensus
 
@@ -107,7 +109,7 @@ jobs:
             # Wenn KEIN 'pending' mehr → aggregate
             if ! echo "$STATES" | grep -q '"pending"'; then
               echo "All stages terminal, running consensus aggregator..."
-              python -m ai_review_pipeline.stages.consensus \
+              ai-review consensus \
                 --sha "$PR_HEAD_SHA" \
                 --pr "$PR_NUMBER" \
                 --target-url "$TARGET_URL"
