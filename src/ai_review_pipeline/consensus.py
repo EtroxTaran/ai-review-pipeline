@@ -64,6 +64,8 @@ def _maybe_alert_disagreement(
     stage_states: dict[str, str],
     pr_number: int | None = None,
     config: dict | None = None,
+    channel_override: str | None = None,
+    suppress_ping: bool = False,
 ) -> None:
     """Wave 5c: Schickt nur wenn Codex+Cursor disagreen (verdict-Mismatch).
 
@@ -101,8 +103,8 @@ def _maybe_alert_disagreement(
                     f"Cursor verdict: {cursor}",
                 ],
                 button_actions=[],
-                channel_id=None,
-                mention_role="@here",
+                channel_id=channel_override,
+                mention_role="" if suppress_ping else "@here",
                 sticky_message=None,
             ),
             config or {},
@@ -118,14 +120,46 @@ def aggregate(
     target_url: str | None = None,
     pr_number: int | None = None,
     config: dict | None = None,
+    status_context: str | None = None,
+    status_context_prefix: str | None = None,
+    channel_override: str | None = None,
+    suppress_ping: bool = False,
 ) -> tuple[str, str]:
     """Read all stage statuses, compute consensus, and write it back.
 
     Wave 5b: STAGE_STATUS_CONTEXTS enthält jetzt 4 stages (code, code-cursor,
     security, design). Wave 5c: Bei Code-Reviewer-Disagreement wird ein
     Discord-Informational-Alert geschickt (Phase 5 Cutover: kein Telegram mehr).
+
+    Wave 7 (Issue #1): Neue optionale Parameter:
+      status_context_prefix — filtert die aggregierten Statuses nach Prefix
+        (z.B. "ai-review-v2" → nur "ai-review-v2/*"-Kontexte werden gelesen).
+        Die Standard-STAGE_STATUS_CONTEXTS werden entsprechend umgebaut.
+      status_context — überschreibt den Kontext, unter dem der Consensus-Status
+        geschrieben wird (Default: common.STATUS_CONSENSUS = "ai-review/consensus").
+      channel_override — Discord-Channel-Override für Alerts.
+      suppress_ping — wenn True, kein @mention in Discord-Alerts.
     """
     gh = gh or common.GhClient()
+
+    # Effektiver Consensus-Context: custom > default
+    effective_consensus_context = status_context or common.STATUS_CONSENSUS
+
+    # Effektive Stage-Contexts: wenn prefix gesetzt, bauen wir die scoped Varianten.
+    # Standard: "ai-review/code", "ai-review/code-cursor", etc.
+    # Mit prefix="ai-review-v2": "ai-review-v2/code", "ai-review-v2/code-cursor", etc.
+    if status_context_prefix is not None:
+        effective_stage_contexts = tuple(
+            f"{status_context_prefix}/{ctx.split('/', 1)[-1]}"
+            for ctx in common.STAGE_STATUS_CONTEXTS
+        )
+        # Effektive STATUS_CODE / STATUS_CODE_CURSOR für Score-Extraction
+        effective_status_code = f"{status_context_prefix}/code"
+        effective_status_code_cursor = f"{status_context_prefix}/code-cursor"
+    else:
+        effective_stage_contexts = common.STAGE_STATUS_CONTEXTS
+        effective_status_code = common.STATUS_CODE
+        effective_status_code_cursor = common.STATUS_CODE_CURSOR
 
     # Wave 6b: Wenn der GhClient die neue `get_commit_status_details` Methode
     # hat, nutzen wir sie um auch descriptions (für Score-Extraction) zu
@@ -138,10 +172,10 @@ def aggregate(
         current = {ctx: details.get(ctx, {}).get("state", "pending")
                    for ctx in details}
         code_score = _parse_score(
-            details.get(common.STATUS_CODE, {}).get("description")
+            details.get(effective_status_code, {}).get("description")
         )
         cursor_score = _parse_score(
-            details.get(common.STATUS_CODE_CURSOR, {}).get("description")
+            details.get(effective_status_code_cursor, {}).get("description")
         )
     else:
         current = gh.get_commit_statuses(sha)
@@ -149,16 +183,30 @@ def aggregate(
     # Normalize missing stages to "pending" — they're in-flight, not skipped.
     stage_states = {
         ctx: current.get(ctx, "pending")
-        for ctx in common.STAGE_STATUS_CONTEXTS
+        for ctx in effective_stage_contexts
     }
+
+    # consensus_status erwartet Keys mit Standard-Präfix (common.STATUS_*).
+    # Wenn wir scoped contexts verwenden, müssen wir die Keys auf die Standard-
+    # STATUS_*-Konstanten remappen, damit die Logik (security-veto, code-consensus)
+    # korrekt funktioniert.
+    if status_context_prefix is not None:
+        remapped_states = {}
+        for ctx, state_val in stage_states.items():
+            stage_part = ctx.split("/", 1)[-1]
+            standard_key = f"ai-review/{stage_part}"
+            remapped_states[standard_key] = state_val
+    else:
+        remapped_states = stage_states
+
     state, description = common.consensus_status(
-        stage_states,
+        remapped_states,
         code_score=code_score,
         cursor_score=cursor_score,
     )
     gh.set_commit_status(
         sha=sha,
-        context=common.STATUS_CONSENSUS,
+        context=effective_consensus_context,
         state=state,
         description=description,
         target_url=target_url,
@@ -205,8 +253,8 @@ def aggregate(
                         f"Avg score: {round(avg, 1)}/10 — human ACK required",
                     ],
                     button_actions=[],
-                    channel_id=None,
-                    mention_role="@here",
+                    channel_id=channel_override,
+                    mention_role="" if suppress_ping else "@here",
                     sticky_message=None,
                 ),
                 config or {},
@@ -215,7 +263,10 @@ def aggregate(
             print(f"⚠️ Soft-Consensus-Alert failed: {exc}", file=sys.stderr)
 
     # Wave 5c: Disagreement-Alert (nur wenn wirklich disagree + Discord konfiguriert)
-    _maybe_alert_disagreement(sha=sha, stage_states=stage_states, pr_number=pr_number, config=config)
+    _maybe_alert_disagreement(
+        sha=sha, stage_states=remapped_states, pr_number=pr_number, config=config,
+        channel_override=channel_override, suppress_ping=suppress_ping,
+    )
     return state, description
 
 
@@ -224,12 +275,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sha", required=True, help="Commit SHA (the PR head)")
     parser.add_argument("--target-url", default=None, help="Optional status target_url")
     parser.add_argument("--pr", type=int, default=None, help="PR number (for Disagreement-Alert)")
+    parser.add_argument(
+        "--status-context",
+        default=None,
+        dest="status_context",
+        help=(
+            "Überschreibt den Kontext unter dem der Consensus-Status geschrieben wird. "
+            "Default: ai-review/consensus. Shadow-Mode: ai-review-v2/consensus."
+        ),
+    )
+    parser.add_argument(
+        "--status-context-prefix",
+        default=None,
+        dest="status_context_prefix",
+        help=(
+            "Filtert aggregierte Stage-Statuses nach Prefix. "
+            "Beispiel: --status-context-prefix ai-review-v2 liest nur "
+            "'ai-review-v2/*'-Kontexte. Default: ai-review/."
+        ),
+    )
+    parser.add_argument(
+        "--discord-channel",
+        default=None,
+        dest="discord_channel",
+        help="Override-Channel-ID für Discord-Alerts (Discord Snowflake). Default: aus config.",
+    )
+    parser.add_argument(
+        "--no-ping",
+        action="store_true",
+        dest="no_ping",
+        help="Unterdrückt @mention-role in Discord-Alerts (kein @here / @role).",
+    )
     args = parser.parse_args(argv)
 
     state, desc = aggregate(
-        sha=args.sha, target_url=args.target_url, pr_number=args.pr,
+        sha=args.sha,
+        target_url=args.target_url,
+        pr_number=args.pr,
+        status_context=args.status_context,
+        status_context_prefix=args.status_context_prefix,
+        channel_override=args.discord_channel,
+        suppress_ping=args.no_ping,
     )
-    print(f"ai-review/consensus={state} — {desc}")
+    print(f"{args.status_context or 'ai-review/consensus'}={state} — {desc}")
     # Fail the workflow if consensus is failure so Branch Protection lights up fast
     return 0 if state in ("success", "pending") else 1
 

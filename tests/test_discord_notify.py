@@ -695,3 +695,98 @@ class TestDefaultWebhookUrl:
 
         call_url = mock_post.call_args[0][0]
         assert call_url == custom_url
+
+
+# ---------------------------------------------------------------------------
+# 11. test_channel_and_ping_override (Scenario 3 — Issue #1)
+# ---------------------------------------------------------------------------
+
+
+class TestChannelAndPingOverride:
+    """Scenario 3: channel_id-Override + suppress_ping (--discord-channel + --no-ping).
+
+    Diese Tests verifizieren das Payload-Verhalten wenn Discord-Channel-Override
+    und no-ping direkt im DiscordNotifyPayload übergeben werden — unabhängig
+    von der Config.
+    """
+
+    def test_payload_channel_id_overrides_config_channel(
+        self, base_config: dict
+    ) -> None:
+        """Wenn channel_id im Payload gesetzt, überschreibt es die Config-channel_id."""
+        payload = DiscordNotifyPayload(
+            event_type="disagreement",
+            pr_url="https://github.com/example/repo/pull/1",
+            repo="example/repo",
+            pr_number=1,
+            consensus_score=5.0,
+            stage_scores={"codex": "success", "cursor": "failure"},
+            findings=["Codex: success, Cursor: failure"],
+            button_actions=[],
+            channel_id="1234",  # Override
+            mention_role=None,
+            sticky_message=None,
+        )
+
+        with patch("ai_review_pipeline.discord_notify.requests.post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            notify_discord(payload, base_config)
+
+        call_body = mock_post.call_args.kwargs.get("json", {})
+        # channel_id im gesendeten Body muss der Override-Wert sein
+        assert call_body["channel_id"] == "1234"
+
+    def test_empty_mention_role_suppresses_ping(
+        self, base_config: dict
+    ) -> None:
+        """mention_role="" im Payload → kein @mention im Body (kein @here)."""
+        payload = DiscordNotifyPayload(
+            event_type="escalation",
+            pr_url="https://github.com/example/repo/pull/1",
+            repo="example/repo",
+            pr_number=1,
+            consensus_score=3.0,
+            stage_scores={},
+            findings=[],
+            button_actions=[],
+            channel_id="1234",
+            mention_role="",  # leer = no-ping
+            sticky_message=None,
+        )
+
+        with patch("ai_review_pipeline.discord_notify.requests.post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            notify_discord(payload, base_config)
+
+        call_body = mock_post.call_args.kwargs.get("json", {})
+        # mention_role muss leer oder falsy sein
+        mention = call_body.get("mention_role")
+        assert not mention or not mention.strip(), (
+            f"Expected empty mention_role with no-ping, got: {mention!r}"
+        )
+
+    def test_payload_channel_id_none_falls_back_to_config(
+        self, base_config: dict
+    ) -> None:
+        """Wenn channel_id im Payload None, wird Config-Wert verwendet."""
+        payload = DiscordNotifyPayload(
+            event_type="disagreement",
+            pr_url="https://github.com/example/repo/pull/1",
+            repo="example/repo",
+            pr_number=1,
+            consensus_score=5.0,
+            stage_scores={},
+            findings=[],
+            button_actions=[],
+            channel_id=None,  # kein Override → Config-Fallback
+            mention_role=None,
+            sticky_message=None,
+        )
+
+        with patch("ai_review_pipeline.discord_notify.requests.post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            notify_discord(payload, base_config)
+
+        call_body = mock_post.call_args.kwargs.get("json", {})
+        # Soll Config-channel_id verwenden
+        assert call_body["channel_id"] == "123456789012345678"

@@ -277,9 +277,19 @@ def run_stage(
     max_iterations: int = 2,  # reifung-v2: 4→2 (Circuit-Breaker)
     gh: common.GhClient | None = None,
     config: dict | None = None,
+    status_context_prefix: str | None = None,
 ) -> int:
     """Return exit code: 0 green, 1 red-unresolved (escalation), 2 error."""
     gh = gh or common.GhClient()
+
+    # Wenn ein status_context_prefix übergeben wird, ersetzen wir den Prefix-Teil
+    # des Standard-Context (z.B. "ai-review/code" → "ai-review-v2/code").
+    # Die Stage-Komponente (alles nach dem letzten "/") bleibt erhalten.
+    if status_context_prefix is not None:
+        stage_name_part = cfg.status_context.split("/", 1)[-1]
+        effective_status_context = f"{status_context_prefix}/{stage_name_part}"
+    else:
+        effective_status_context = cfg.status_context
 
     try:
         pr = gh.get_pr(pr_number)
@@ -317,7 +327,7 @@ def run_stage(
     # Mark as pending before we start — users see progress in the PR UI.
     try:
         gh.set_commit_status(
-            sha=head_sha, context=cfg.status_context, state="pending",
+            sha=head_sha, context=effective_status_context, state="pending",
             description=f"{cfg.reviewer_label} review in progress",
             target_url=target_url,
         )
@@ -343,7 +353,7 @@ def run_stage(
             if not cfg.path_filter(changed):
                 print(f"⏭️  {cfg.name}: no relevant files changed — marking skipped.")
                 gh.set_commit_status(
-                    sha=head_sha, context=cfg.status_context, state="success",
+                    sha=head_sha, context=effective_status_context, state="success",
                     # "skipped" state isn't valid in GitHub's API vocabulary (only
                     # success/failure/pending/error). We use success + "skipped"
                     # in the description; consensus.py reads the description to
@@ -407,7 +417,7 @@ def run_stage(
             print(f"⚠️  Rate-limit detected in {cfg.name} reviewer — skipping stage.")
             try:
                 gh.set_commit_status(
-                    sha=head_sha, context=cfg.status_context, state="success",
+                    sha=head_sha, context=effective_status_context, state="success",
                     description="skipped: rate-limit — consensus uses other stages",
                     target_url=target_url,
                 )
@@ -440,7 +450,7 @@ def run_stage(
 
         if initial_success:
             gh.set_commit_status(
-                sha=head_sha, context=cfg.status_context, state="success",
+                sha=head_sha, context=effective_status_context, state="success",
                 description=scoring_desc or f"{cfg.reviewer_label} clean",
                 target_url=target_url,
             )
@@ -449,7 +459,7 @@ def run_stage(
 
         if skip_fix_loop:
             gh.set_commit_status(
-                sha=head_sha, context=cfg.status_context, state="failure",
+                sha=head_sha, context=effective_status_context, state="failure",
                 description=scoring_desc or f"{cfg.reviewer_label} flagged findings (fix-loop skipped)",
                 target_url=target_url,
             )
@@ -476,7 +486,7 @@ def run_stage(
 
         if outcome.success:
             gh.set_commit_status(
-                sha=final_sha, context=cfg.status_context, state="success",
+                sha=final_sha, context=effective_status_context, state="success",
                 description=f"{cfg.reviewer_label} green after {outcome.iterations} iterations",
                 target_url=target_url,
             )
@@ -535,7 +545,7 @@ def run_stage(
             print(f"⚠️ Discord-Alert failed: {exc}", file=sys.stderr)
 
         gh.set_commit_status(
-            sha=final_sha, context=cfg.status_context, state="failure",
+            sha=final_sha, context=effective_status_context, state="failure",
             description=f"{cfg.reviewer_label} unresolved after {outcome.iterations} iterations — human review",
             target_url=target_url,
         )
@@ -546,7 +556,7 @@ def run_stage(
         try:
             gh.set_commit_status(
                 sha=head_sha if "head_sha" in locals() else "HEAD",
-                context=cfg.status_context, state="error",
+                context=effective_status_context, state="error",
                 description=f"Stage crashed: {str(exc)[:80]}",
                 target_url=target_url,
             )
@@ -577,4 +587,15 @@ def build_arg_parser(stage_name: str) -> argparse.ArgumentParser:
     ap.add_argument("--max-iterations", type=int, default=2,
                     help="reifung-v2: Default 2 (Circuit-Breaker); ältere Workflows "
                          "überschreiben via CLI-Arg.")
+    ap.add_argument(
+        "--status-context-prefix",
+        default=None,
+        dest="status_context_prefix",
+        help=(
+            "Überschreibt den Prefix im Commit-Status-Context. "
+            "Beispiel: --status-context-prefix ai-review-v2 schreibt "
+            "'ai-review-v2/code' statt 'ai-review/code'. "
+            "Nützlich für Shadow-Mode-Workflows (Phase 4)."
+        ),
+    )
     return ap
