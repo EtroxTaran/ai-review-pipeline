@@ -33,18 +33,19 @@ pytest --cov
 
 Plan: `~/.claude/plans/reports-projects-ai-portal-docs-v2-40-a-iridescent-flask.md` — Phase 3.
 
-## Phase 3.1 Status
+## Phase 3 Status
 
-- [x] Package skeleton (pyproject, src layout)
-- [x] `issue_parser.py` — 18 tests green
-- [x] `stages/ac_validation.py` — 10 tests green
-- [x] `schema/config.schema.yaml` + example
-- [x] `gh-ai-review` extension skeleton
-- [ ] Extract `common.py`, `consensus.py`, `scoring.py`, `fix_loop.py` (Phase 3.2)
-- [ ] Extract individual stage runners (`code_review.py`, `security_review.py`, `design_review.py`) (Phase 3.3)
-- [ ] Port `telegram_alert.py` → `discord_notify.py` (Phase 3.4)
-- [ ] Extract + parameterize workflow templates (Phase 3.5)
-- [ ] Dogfood: pipeline reviewt sich selbst (Phase 3.6)
+- [x] Phase 3.1 — Package skeleton + Stage 5 AC-Validation (28 tests, 96.81% cov)
+- [x] Phase 3.3 — `common.py` extraction TDD (95 tests, 96% cov)
+- [x] Phase 3.4 — `discord_notify.py` (33 tests, 98% cov, ops-n8n webhook)
+- [x] Phase 3.5 — 10 workflow templates (9 ported + 1 new AC-validation)
+- [ ] Phase 3.2 — GitHub-Repo `EtroxTaran/ai-review-pipeline` anlegen + push (braucht User-Go)
+- [ ] Phase 3.3-Rest — Extract `scoring.py`, `consensus.py`, `fix_loop.py`, `nachfrage.py`, `auto_fix.py`, `metrics.py`, `issue_context.py`, `preflight.py`
+- [ ] Phase 3.3b — Stage-Runner: `code_review.py`, `cursor_review.py`, `security_review.py`, `design_review.py`, `stage.py` (orchestrator)
+- [ ] Phase 3.5b — `cli.py` für `ai-review` Console-Script (vereinfacht `ai-review-ac-validation.yml`)
+- [ ] Phase 3.6 — Dogfooding: Pipeline reviewt sich selbst
+
+**Current main:** 156/156 pytest green · Coverage 96.36% · stdlib + pyyaml + requests only.
 
 ## License
 
