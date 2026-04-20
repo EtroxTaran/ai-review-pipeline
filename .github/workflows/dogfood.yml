@@ -1,3 +1,4 @@
+---
 # Phase 3.6 Dogfood — erste 3 Runs dürfen admin-mergen bei Stage-Issues (Bootstrap-Pain)
 #
 # Self-Review des ai-review-pipeline-Repos via eigene extrahierte Pipeline.
@@ -10,6 +11,9 @@
 #   - DISCORD_NOTIFICATION_WEBHOOK  (optional — leer = kein Alert, kein Crash)
 
 name: Dogfood Self-Review
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 on:
   workflow_dispatch:

@@ -1,3 +1,4 @@
+---
 # NOTE: parametrized from ai-portal@2026-04-20
 # Changes:
 #   - python3 -m scripts.ai-review.security_review → python -m ai_review_pipeline.stages.security_review
@@ -12,6 +13,9 @@
 #   - Setup Python + pip install ai-review-pipeline Steps ergänzt
 
 name: AI Security Review (Stage 2)
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Stage 2: Gemini 2.5 Pro, geerdet auf einem semgrep-baseline-Scan.
 # Läuft PARALLEL zu Stage 1 + 3, direkt auf pull_request.synchronize.
