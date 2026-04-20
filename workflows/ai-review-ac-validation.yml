@@ -1,7 +1,8 @@
 # NOTE: neuer Workflow (Stage 5), erstellt 2026-04-20
-# Kein Source in ai-portal — dieser Workflow ist Neuland der ai-review-pipeline.
-# cli.py-Einstiegspunkt existiert noch nicht im Package (TODO: implementieren).
-# Interim: direkter Python-Import via -c als Platzhalter.
+# Wave 5 — migrated to ai-review CLI 2026-04-20:
+#   Interim python3 -c Inline-Block ersetzt durch ai-review ac-validate.
+#   Datenbeschaffung (PR-Body, Issue-Bodies, Diff) via gh CLI + jq in Shell.
+#   Commit-Status und PR-Comment-Posting bleibt in Shell (nicht Teil der CLI).
 
 name: AI Review — AC Validation (Stage 5)
 
@@ -47,155 +48,161 @@ jobs:
       - name: Install ai-review-pipeline
         run: pip install ai-review-pipeline
 
+      - name: Fetch PR body + linked issues + diff into temp files
+        id: fetch_data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          WORKDIR=$(mktemp -d)
+          echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
+
+          # PR-Body und closing issue numbers holen
+          gh pr view "$PR_NUMBER" --json body,closingIssuesReferences,files \
+            > "$WORKDIR/pr_meta.json"
+
+          # PR-Body in eigene Datei schreiben
+          jq -r '.body // ""' "$WORKDIR/pr_meta.json" > "$WORKDIR/pr_body.txt"
+
+          # Geänderte Files als komma-separierte Liste
+          jq -r '[.files[].path] | join(",")' "$WORKDIR/pr_meta.json" \
+            > "$WORKDIR/changed_files.txt"
+          CHANGED_FILES=$(cat "$WORKDIR/changed_files.txt")
+          echo "changed_files=$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+
+          # Diff (cap 30k chars)
+          gh pr diff "$PR_NUMBER" 2>/dev/null \
+            | head -c 30000 > "$WORKDIR/pr_diff.txt" || true
+
+          # Linked-Issues-JSON aufbauen: { "N": ["issue body text"] }
+          # closingIssuesReferences: [{number: N, ...}, ...]
+          ISSUE_NUMS=$(jq -r '.closingIssuesReferences[].number // empty' "$WORKDIR/pr_meta.json")
+          echo "{}" > "$WORKDIR/linked_issues.json"
+          for ISSUE_NUM in $ISSUE_NUMS; do
+            ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body // ""' 2>/dev/null || echo "")
+            # JSON-sicher escapen via python3 (einzeiler — keine Pipeline-Abhängigkeit)
+            python3 -c "
+          import json, sys
+          current = json.load(open('$WORKDIR/linked_issues.json'))
+          current[str($ISSUE_NUM)] = [sys.argv[1]]
+          json.dump(current, open('$WORKDIR/linked_issues.json', 'w'))
+          " "$ISSUE_BODY"
+          done
+
       - name: Run Stage 5 — AC Coverage Validation
         id: ac_validation
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # ANTHROPIC_API_KEY wird für den LLM-Judge gebraucht (Codex primary, Claude second-opinion).
-          # Auf dem r2d2-Runner liegt der Key via OAuth-Store — kein Secret im Repo nötig.
-          # Falls Consumer-Repo keinen self-hosted-Runner mit OAuth nutzt, muss dieser
-          # Secret gesetzt sein: ANTHROPIC_API_KEY
+          # ANTHROPIC_API_KEY: Runner-OAuth-Store auf r2d2 liefert den Key.
+          # Falls Consumer-Repo keinen self-hosted-Runner mit OAuth nutzt:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WORKDIR: ${{ steps.fetch_data.outputs.workdir }}
+          CHANGED_FILES: ${{ steps.fetch_data.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+
+          # ai-review ac-validate aufrufen; stdout in Datei für spätere Auswertung
+          set +e
+          ai-review ac-validate \
+            --pr-body-file       "$WORKDIR/pr_body.txt" \
+            --linked-issues-file "$WORKDIR/linked_issues.json" \
+            --changed-files      "$CHANGED_FILES" \
+            --diff-file          "$WORKDIR/pr_diff.txt" \
+            > "$WORKDIR/ac_output.txt" 2>&1
+          AC_EXIT=$?
+          set -e
+
+          cat "$WORKDIR/ac_output.txt"
+
+          # Score + Confidence aus der ersten Ausgabezeile parsen
+          # Format: "✅ AC-Validation: score=X/10, confidence=Y.YY, waived=Z"
+          FIRST_LINE=$(head -n1 "$WORKDIR/ac_output.txt" | sed 's/[^[:print:]]//g')
+          SCORE=$(echo "$FIRST_LINE"    | grep -oP 'score=\K[0-9]+' || echo "0")
+          CONFIDENCE=$(echo "$FIRST_LINE" | grep -oP 'confidence=\K[0-9.]+' || echo "0")
+          WAIVED=$(echo "$FIRST_LINE"   | grep -oP 'waived=\K\w+' || echo "False")
+
+          # State aus Score ableiten (spiegelt _handle_ac_validate-Logik)
+          if   [ "$SCORE" -ge 8 ]; then STATE="success"
+          elif [ "$SCORE" -ge 5 ]; then STATE="pending"   # soft — Consensus fragt nach
+          else                          STATE="failure"
+          fi
+
+          SUMMARY="AC-Coverage score ${SCORE}/10 (confidence $(printf '%.0f' "$(echo "$CONFIDENCE * 100" | bc)")%)"
+          echo "AC-Validation: $STATE — $SUMMARY"
+
+          echo "state=$STATE"       >> "$GITHUB_OUTPUT"
+          echo "score=$SCORE"       >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY"   >> "$GITHUB_OUTPUT"
+          echo "exit_code=$AC_EXIT" >> "$GITHUB_OUTPUT"
+
+      - name: Set commit status ai-review/ac-validation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          STATE: ${{ steps.ac_validation.outputs.state }}
+          SUMMARY: ${{ steps.ac_validation.outputs.summary }}
         run: |
           set -euo pipefail
           TARGET_URL="${GITHUB_SERVER_URL}/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}"
+          gh api "repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
+            -f state="$STATE" \
+            -f context="ai-review/ac-validation" \
+            -f description="${SUMMARY:0:140}" \
+            -f target_url="$TARGET_URL"
+          echo "Commit-Status gesetzt: $STATE — $SUMMARY"
 
-          # TODO: cli.py-Einstiegspunkt implementieren (ai_review_pipeline.cli).
-          # Interim: direkter Modul-Aufruf via Python-Inline-Script.
-          # Nach cli.py-Implementierung ersetzen durch:
-          #   python -m ai_review_pipeline.cli ac-validation \
-          #     --pr "$PR_NUMBER" \
-          #     --sha "$PR_HEAD_SHA" \
-          #     --target-url "$TARGET_URL"
-
-          python3 -c "
-          import os, json, subprocess, sys
-
-          pr_number = os.environ['PR_NUMBER']
-          head_sha = os.environ['PR_HEAD_SHA']
-          gh_token = os.environ['GH_TOKEN']
-          target_url = os.environ.get('TARGET_URL', '')
-          repo = os.environ.get('GITHUB_REPOSITORY', '')
-
-          # Stage ausführen (ohne LLM-Judge — pre-check only bis cli.py fertig)
-          from ai_review_pipeline.stages.ac_validation import validate_ac_coverage, ACValidationInput
-          from ai_review_pipeline.issue_parser import parse_gherkin_ac
-
-          # PR-Body + verlinkte Issues via gh CLI holen
-          pr_meta_raw = subprocess.check_output(
-              ['gh', 'pr', 'view', pr_number, '--json', 'body,closingIssuesReferences,files'],
-              env={**os.environ, 'GH_TOKEN': gh_token}
-          )
-          pr_meta = json.loads(pr_meta_raw)
-          pr_body = pr_meta.get('body') or ''
-          closing_issues = pr_meta.get('closingIssuesReferences') or []
-          changed_files = [f['path'] for f in (pr_meta.get('files') or [])]
-
-          # Diff für LLM-Judge (wird für Pre-Check nicht gebraucht, aber für spätere cli.py)
-          try:
-              pr_diff = subprocess.check_output(
-                  ['gh', 'pr', 'diff', pr_number],
-                  env={**os.environ, 'GH_TOKEN': gh_token}
-              ).decode('utf-8', errors='replace')[:30000]  # cap auf 30k chars
-          except Exception:
-              pr_diff = ''
-
-          # ACs aus verlinkten Issues parsen
-          linked_issues = {}
-          for issue_ref in closing_issues:
-              issue_num = issue_ref.get('number')
-              if not issue_num:
-                  continue
-              try:
-                  issue_raw = subprocess.check_output(
-                      ['gh', 'issue', 'view', str(issue_num), '--json', 'body'],
-                      env={**os.environ, 'GH_TOKEN': gh_token}
-                  )
-                  issue_body = json.loads(issue_raw).get('body') or ''
-                  acs = parse_gherkin_ac(issue_body, issue_number=issue_num)
-                  linked_issues[issue_num] = acs
-              except Exception as e:
-                  print(f'Warning: could not fetch issue #{issue_num}: {e}', file=sys.stderr)
-
-          inp = ACValidationInput(
-              pr_body=pr_body,
-              linked_issues=linked_issues,
-              changed_files=changed_files,
-              pr_diff=pr_diff,
-          )
-
-          # LLM-Judge: None bis cli.py + Judge-Integration fertig (TODO)
-          result = validate_ac_coverage(inp, llm_judge=None)
-
-          # Commit-Status setzen
-          if result.score >= 8:
-              state = 'success'
-          elif result.score >= 5:
-              state = 'pending'  # soft — Consensus fragt nach
-          else:
-              state = 'failure'
-
-          summary = f'AC-Coverage score {result.score}/10 (confidence {result.confidence:.0%})'
-          print(f'AC-Validation: {state} — {summary}')
-          for f in result.findings:
-              print(f'  [{f.severity}] {f.message}')
-
-          import subprocess as sp
-          sp.run([
-              'gh', 'api',
-              f'repos/{repo}/statuses/{head_sha}',
-              '-f', f'state={state}',
-              '-f', 'context=ai-review/ac-validation',
-              '-f', f'description={summary[:140]}',
-              '-f', f'target_url={target_url}',
-          ], env={**os.environ, 'GH_TOKEN': gh_token}, check=True)
-
-          # Findings als PR-Comment (nur bei failure/pending)
-          if state != 'success' and result.findings:
-              errors = [f for f in result.findings if f.severity == 'error']
-              warnings = [f for f in result.findings if f.severity == 'warning']
-              body_lines = ['<!-- ai-review-ac-validation -->', '## AC-Validation Report', '']
-              body_lines.append(f'**Score:** {result.score}/10 | **Status:** {state}')
-              body_lines.append('')
-              if errors:
-                  body_lines.append('### Errors')
-                  for f in errors:
-                      body_lines.append(f'- {f.message}')
-                  body_lines.append('')
-              if warnings:
-                  body_lines.append('### Warnings')
-                  for f in warnings:
-                      body_lines.append(f'- {f.message}')
-                  body_lines.append('')
-              body_lines.append('_Waiver: `/ai-review ac-waiver <reason ≥30 chars>`_')
-              comment_body = '\n'.join(body_lines)
-
-              # Existierenden AC-Comment updaten oder neu posten
-              existing_raw = sp.check_output([
-                  'gh', 'api',
-                  f'repos/{repo}/issues/{pr_number}/comments',
-                  '--jq', '.[] | select(.body | contains(\"ai-review-ac-validation\")) | .id',
-              ], env={**os.environ, 'GH_TOKEN': gh_token}).decode().strip()
-              if existing_raw:
-                  existing_id = existing_raw.split('\n')[0]
-                  sp.run([
-                      'gh', 'api', '-X', 'PATCH',
-                      f'repos/{repo}/issues/comments/{existing_id}',
-                      '-f', f'body={comment_body}',
-                  ], env={**os.environ, 'GH_TOKEN': gh_token}, check=False)
-              else:
-                  sp.run([
-                      'gh', 'pr', 'comment', pr_number,
-                      '--body', comment_body,
-                  ], env={**os.environ, 'GH_TOKEN': gh_token}, check=False)
-
-          # Exit-Code: 0 immer (Status ist per Commit-Status kommuniziert, nicht Exit-Code)
-          sys.exit(0)
-          "
-          TARGET_URL="${GITHUB_SERVER_URL}/${{ github.repository }}/actions/runs/${GITHUB_RUN_ID}"
+      - name: Post AC-Validation report as PR comment (failure/pending only)
+        if: steps.ac_validation.outputs.state != 'success'
         env:
-          TARGET_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STATE: ${{ steps.ac_validation.outputs.state }}
+          SCORE: ${{ steps.ac_validation.outputs.score }}
+          WORKDIR: ${{ steps.fetch_data.outputs.workdir }}
+        run: |
+          set -euo pipefail
+
+          # Findings aus dem CLI-Output extrahieren (alle Zeilen nach der ersten)
+          FINDINGS=$(tail -n +2 "$WORKDIR/ac_output.txt" | sed 's/[^[:print:]]//g')
+
+          # Comment-Body bauen
+          BODY=$(cat <<EOF
+          <!-- ai-review-ac-validation -->
+          ## AC-Validation Report
+
+          **Score:** ${SCORE}/10 | **Status:** ${STATE}
+
+          ${FINDINGS}
+
+          _Waiver: \`/ai-review ac-waiver <reason ≥30 chars>\`_
+          EOF
+          )
+
+          # Existierenden AC-Comment updaten oder neu posten
+          EXISTING_ID=$(gh api \
+            "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("ai-review-ac-validation")) | .id' \
+            | head -n1 || echo "")
+
+          if [ -n "$EXISTING_ID" ]; then
+            gh api -X PATCH \
+              "repos/${{ github.repository }}/issues/comments/$EXISTING_ID" \
+              -f body="$BODY" >/dev/null
+            echo "AC-Validation-Comment aktualisiert (id=$EXISTING_ID)"
+          else
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+            echo "AC-Validation-Comment neu gepostet"
+          fi
+
+      - name: Cleanup temp files
+        if: always()
+        env:
+          WORKDIR: ${{ steps.fetch_data.outputs.workdir }}
+        run: |
+          [ -n "$WORKDIR" ] && rm -rf "$WORKDIR" || true

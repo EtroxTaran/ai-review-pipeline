@@ -8,6 +8,8 @@
 #     Consumer muss AI_REVIEW_POSTFIX_CHECK env-Var oder Script-Override setzen
 #     (Default im Python-Script: `true` / no-op bis Consumer konfiguriert)
 #   - Kein pull_request_target verwendet — Trigger ist workflow_dispatch (konform)
+# Wave 5 (2026-04-20):
+#   - python -m ai_review_pipeline.stages.auto_fix → ai-review auto-fix
 
 name: AI Review — Auto-Fix
 
@@ -121,7 +123,7 @@ jobs:
           # Post-Fix-Checks durchzuführen (z. B. pnpm typecheck && pnpm test --changed)
           AI_REVIEW_POSTFIX_CHECK: ${{ vars.AI_REVIEW_POSTFIX_CHECK || '' }}
         run: |
-          python -m ai_review_pipeline.stages.auto_fix \
+          ai-review auto-fix \
             --pr "${{ inputs.pr_number }}" \
             --reason "${{ inputs.reason }}" \
             --context-hint "${{ inputs.context_hint }}" \

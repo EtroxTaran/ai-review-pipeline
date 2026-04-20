@@ -7,6 +7,9 @@
 #   - Comment "Für das Lesen des triggernden workflow_run-Kontexts" entfernt
 #     (workflow_run-Trigger wurde in Wave 2c bereits abgelöst)
 #   - Kein pull_request_target verwendet (war schon pull_request — konform)
+# Wave 5 (2026-04-20):
+#   - python -m ai_review_pipeline.stages.security_review → ai-review stage security
+#   - Setup Python + pip install ai-review-pipeline Steps ergänzt
 
 name: AI Security Review (Stage 2)
 
@@ -52,6 +55,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ai-review-pipeline
+        run: pip install ai-review-pipeline
+
       - name: Preflight — CLI OAuth presence
         run: bash scripts/ai-review-preflight.sh security
 
@@ -62,7 +73,7 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
         run: |
-          python -m ai_review_pipeline.stages.security_review \
+          ai-review stage security \
             --pr ${{ github.event.pull_request.number }} \
             --max-iterations 2 \
             --skip-fix-loop

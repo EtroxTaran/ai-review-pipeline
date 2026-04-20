@@ -6,6 +6,9 @@
 #   - scripts/ai-review-preflight.sh bleibt — muss im Consumer-Repo mitgeliefert werden
 #     (TODO: in späterem Phase das Preflight-Skript ins Package einbauen)
 #   - Kein pull_request_target verwendet (war schon pull_request — konform)
+# Wave 5 (2026-04-20):
+#   - python -m ai_review_pipeline.stages.code_review → ai-review stage code-review
+#   - Setup Python + pip install ai-review-pipeline Steps ergänzt
 
 name: AI Code Review (Stage 1)
 
@@ -76,6 +79,16 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0  # Fix-loop & diffs brauchen History
 
+      - name: Setup Python
+        if: steps.fix_guard.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ai-review-pipeline
+        if: steps.fix_guard.outputs.skip != 'true'
+        run: pip install ai-review-pipeline
+
       - name: Preflight — CLI OAuth presence
         if: steps.fix_guard.outputs.skip != 'true'
         run: bash scripts/ai-review-preflight.sh code
@@ -89,6 +102,6 @@ jobs:
           # Discord-Notification-Webhook (leer = kein Alert, kein Crash)
           DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
         run: |
-          python -m ai_review_pipeline.stages.code_review \
+          ai-review stage code-review \
             --pr ${{ github.event.pull_request.number }} \
             --max-iterations 2

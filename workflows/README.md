@@ -103,8 +103,8 @@ Stages `ai-review-scope-check.yml` und `ai-review-auto-escalate.yml` laufen auf
 
 Alle Stage-Timeouts, Modell-Overrides und Blocking-Verhalten sind in der
 Pro-Projekt-Config `.ai-review/config.yaml` konfigurierbar. Die Workflows lesen diese
-Config via `python -m ai_review_pipeline.stages.<stage>`, die die Config aus dem
-Checkout-Verzeichnis lädt.
+Config via `ai-review stage <stage>` (bzw. `ai-review consensus` / `ai-review ac-validate`),
+die die Config aus dem Checkout-Verzeichnis lädt.
 
 Relevante Config-Felder:
 
@@ -171,20 +171,24 @@ EOF
 
 ---
 
-## Hinweise zum Stage-5-Interim-Modus
+## Stage-5 — `ai-review ac-validate` (Wave 5)
 
-`cli.py`-Einstiegspunkt (`python -m ai_review_pipeline.cli ac-validation`) ist noch
-nicht implementiert (Phase 3.5b pending). Der Workflow `ai-review-ac-validation.yml`
-nutzt interim einen Python-Inline-Block mit direktem `validate_ac_coverage`-Aufruf.
-Nach cli.py-Implementierung vereinfacht sich der Run-Step auf:
+Der Workflow `ai-review-ac-validation.yml` nutzt seit Wave 5 den `ai-review ac-validate`
+Subcommand. Datenbeschaffung (PR-Body, Issue-Bodies, Diff) erfolgt via `gh` CLI in Shell
+und wird als Temp-Files übergeben:
 
 ```yaml
 run: |
-  python -m ai_review_pipeline.cli ac-validation \
-    --pr "$PR_NUMBER" \
-    --sha "$PR_HEAD_SHA" \
-    --target-url "$TARGET_URL"
+  ai-review ac-validate \
+    --pr-body-file       "$WORKDIR/pr_body.txt" \
+    --linked-issues-file "$WORKDIR/linked_issues.json" \
+    --changed-files      "$CHANGED_FILES" \
+    --diff-file          "$WORKDIR/pr_diff.txt"
 ```
+
+Commit-Status-Posting und PR-Comment erfolgen weiterhin in Shell-Steps nach dem
+`ai-review ac-validate`-Aufruf (diese Verantwortung liegt bewusst im Workflow,
+nicht in der CLI).
 
 ---
 
