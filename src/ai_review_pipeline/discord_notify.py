@@ -2,7 +2,7 @@
 
 Architektur-Entscheidung (Plan §§269-399):
   Dieses Modul sendet NICHT direkt an die Discord-API. Stattdessen postet es
-  einen strukturierten JSON-Payload an den ops-n8n-Webhook auf r2d2:5679.
+  einen strukturierten JSON-Payload an den ai-portal-n8n Webhook auf r2d2:5678.
   ops-n8n übernimmt:
     - Discord Components v2 Rendering (Embed + ActionRow + Buttons)
     - Sticky-Message-Logik (Edit statt Neu-Post)
@@ -26,7 +26,7 @@ Discord vs. Telegram Unterschiede:
   - kein Bot-Token im Python-Modul (nur in ops-n8n)
 
 Environment Variables:
-  AI_REVIEW_DISPATCH_URL  — Override der ops-n8n Webhook-URL (Default: localhost:5679)
+  AI_REVIEW_DISPATCH_URL  — Override der n8n Webhook-URL (Default: http://127.0.0.1:5678 — ai-portal-n8n consolidated setup)
   AI_REVIEW_METRICS_PATH  — Override des Metrics-JSONL-Pfads
 """
 
@@ -45,7 +45,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Default-URL für den ops-n8n Dispatch-Webhook (überschreibbar via Env)
-_DEFAULT_DISPATCH_URL = "http://127.0.0.1:5679/webhook/ai-review-dispatch"
+_DEFAULT_DISPATCH_URL = "http://127.0.0.1:5678/webhook/ai-review-dispatch"
 
 # Timeout für den HTTP-POST (Plan: 5s)
 _REQUEST_TIMEOUT = 5
