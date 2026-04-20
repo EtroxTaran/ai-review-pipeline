@@ -2,7 +2,7 @@
 
 Design-Entscheidungen (aus Plan §§269-399):
 - discord_notify.py postet NICHT direkt an Discord-API (Rate-Limits, Components-v2-Komplexität).
-- Stattdessen: HTTP-POST an ops-n8n Webhook `http://127.0.0.1:5679/webhook/ai-review-dispatch`.
+- Stattdessen: HTTP-POST an ai-portal-n8n Webhook `http://127.0.0.1:5678/webhook/ai-review-dispatch`.
 - ops-n8n übernimmt Components-v2-Rendering, Inline-Buttons, Sticky-Messages.
 - Fail-Open (Plan S6): Wenn ops-n8n down → logge in metrics.jsonl, kein Exception-Raise.
 
@@ -89,7 +89,7 @@ class TestPayloadShapeMatchesContract:
 
         mock_post.assert_called_once()
         call_url = mock_post.call_args[0][0]
-        assert call_url == "http://127.0.0.1:5679/webhook/ai-review-dispatch"
+        assert call_url == "http://127.0.0.1:5678/webhook/ai-review-dispatch"
 
     def test_json_body_contains_required_fields(
         self, base_payload: DiscordNotifyPayload, base_config: dict
