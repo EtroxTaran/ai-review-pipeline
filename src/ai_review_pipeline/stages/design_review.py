@@ -23,53 +23,8 @@ from pathlib import Path
 
 from ai_review_pipeline import common
 
-# ---------------------------------------------------------------------------
-# Wave 4b TODO: stage.py ist noch nicht portiert (Wave 4b).
-# Bis dahin importieren wir aus dem ai-portal-Original via relativer Pfad-Magie
-# ODER stubben die benötigte Schnittstelle hier minimal ab.
-# Aktueller Ansatz: Stub — damit ist design_review.py vollständig standalone
-# testbar ohne stage.py-Abhängigkeit.
-# ---------------------------------------------------------------------------
-try:
-    from ai_review_pipeline import stage  # type: ignore[import]
-except ImportError:  # pragma: no cover — fällt weg sobald Wave 4b gemergt ist
-    # Minimaler Stub: StageConfig, run_stage, build_arg_parser
-    import argparse
-    from dataclasses import dataclass, field
-    from typing import Any, Callable
-
-    @dataclass  # type: ignore[no-redef]
-    class _StageConfig:
-        name: str
-        status_context: str
-        sticky_marker: str
-        title_prefix: str
-        prompt_file: str
-        reviewer_label: str
-        ok_sentinels: tuple[str, ...]
-        reviewer_fn: Callable[..., str]
-        path_filter: Callable[[list[str]], bool] | None = None
-        treat_no_findings_as_clean: bool = False
-
-    class _StageMod:
-        StageConfig = _StageConfig
-
-        @staticmethod
-        def build_arg_parser(stage_name: str) -> argparse.ArgumentParser:
-            ap = argparse.ArgumentParser(description=f"AI {stage_name} review stage")
-            ap.add_argument("--pr", type=int, required=True)
-            ap.add_argument("--skip-preflight", action="store_true")
-            ap.add_argument("--skip-fix-loop", action="store_true")
-            ap.add_argument("--max-iterations", type=int, default=2)
-            return ap
-
-        @staticmethod
-        def run_stage(cfg: Any, *, pr_number: int, skip_preflight: bool,
-                      skip_fix_loop: bool, max_iterations: int) -> int:  # pragma: no cover
-            # Stub — wird durch echte Implementierung in Wave 4b ersetzt.
-            raise NotImplementedError("stage.run_stage ist noch nicht portiert (Wave 4b)")
-
-    stage = _StageMod()  # type: ignore[assignment]
+# Wave 4b: stage.py ist portiert — direkter Import.
+from ai_review_pipeline.stages import stage
 
 
 # ---------------------------------------------------------------------------

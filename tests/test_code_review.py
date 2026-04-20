@@ -88,21 +88,40 @@ def _make_parser() -> argparse.ArgumentParser:
 def _import_code_review(stage_mod: Any) -> Any:
     """Importiert code_review frisch unter gemocktem stage-Modul.
 
-    Nutzt sys.modules-Patching damit der relative Import `from . import stage`
-    den Stub bekommt. Module wird nach dem Test-Import aus sys.modules entfernt
+    Nutzt sys.modules-Patching damit der lazy Import `_get_stage()` den Stub
+    bekommt. Module wird nach dem Test-Import aus sys.modules entfernt
     (Isolation). Approach ist analog zu den test_common.py FakeRunner-Tests.
+
+    Wave-4b-Fix: `from ai_review_pipeline.stages import stage` (Package-Attribute-
+    Lookup) ignoriert sys.modules-Patches wenn das stages-Paket bereits geladen
+    ist. Wir patchen daher ZUSÄTZLICH `ai_review_pipeline.stages.stage` als
+    Attribut des stages-Pakets, damit auch dieser Pfad den Stub trifft.
     """
+    import importlib
+
     modules_to_patch = {
         "ai_review_pipeline.stages.stage": stage_mod,
         # common wird echt importiert — wir wollen run_codex testen
     }
-    with patch.dict("sys.modules", modules_to_patch):
-        # Force-reimport (sauber für multi-Test isolation)
-        for key in list(sys.modules):
-            if "code_review" in key:
-                del sys.modules[key]
-        import ai_review_pipeline.stages.code_review as cr
-        return cr
+    # Stages-Paket muss zum Zeitpunkt des patches das stage-Attribut als Mock sehen.
+    import ai_review_pipeline.stages as stages_pkg
+    original_stage_attr = getattr(stages_pkg, "stage", None)
+    stages_pkg.stage = stage_mod  # type: ignore[attr-defined]
+
+    try:
+        with patch.dict("sys.modules", modules_to_patch):
+            # Force-reimport (sauber für multi-Test isolation)
+            for key in list(sys.modules):
+                if "code_review" in key:
+                    del sys.modules[key]
+            import ai_review_pipeline.stages.code_review as cr
+            return cr
+    finally:
+        # Restore stages.stage Attribut
+        if original_stage_attr is not None:
+            stages_pkg.stage = original_stage_attr  # type: ignore[attr-defined]
+        elif hasattr(stages_pkg, "stage"):
+            delattr(stages_pkg, "stage")
 
 
 # ---------------------------------------------------------------------------

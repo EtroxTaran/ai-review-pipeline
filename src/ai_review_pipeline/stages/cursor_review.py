@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 from ai_review_pipeline import common  # noqa: I001
 
@@ -52,65 +51,7 @@ from ai_review_pipeline import common  # noqa: I001
 # Wave 4b in src/ai_review_pipeline/stage.py portiert.
 # ---------------------------------------------------------------------------
 
-try:
-    from ai_review_pipeline import stage  # type: ignore[import]
-except ImportError:
-    # Stub-Implementierung für Wave 4b — stage.py noch nicht auf main.
-    import argparse
-    from collections.abc import Callable
-    from dataclasses import dataclass
-
-    @dataclass  # type: ignore[no-redef]
-    class _StageConfig:  # noqa: N801
-        """Minimaler Stub — ersetzt durch stage.StageConfig in Wave 4b."""
-        name: str
-        status_context: str
-        sticky_marker: str
-        title_prefix: str
-        prompt_file: str
-        reviewer_label: str
-        ok_sentinels: tuple[str, ...]
-        reviewer_fn: Callable[..., str]
-        path_filter: Callable[[list[str]], bool] | None = None
-        treat_no_findings_as_clean: bool = False
-
-    class _StageStub:  # noqa: N801
-        """Namespace-Stub für stage.StageConfig / stage.run_stage / stage.build_arg_parser."""
-
-        StageConfig = _StageConfig  # type: ignore[assignment]
-
-        @staticmethod
-        def build_arg_parser(stage_name: str) -> argparse.ArgumentParser:
-            ap = argparse.ArgumentParser(description=f"AI {stage_name} review stage")
-            ap.add_argument("--pr", type=int, required=True, help="PR number")
-            ap.add_argument("--skip-preflight", action="store_true")
-            ap.add_argument(
-                "--skip-fix-loop", action="store_true",
-                help="Only run the initial review — don't enter claude-fix loop.",
-            )
-            ap.add_argument(
-                "--max-iterations", type=int, default=2,
-                help="reifung-v2: Default 2 (Circuit-Breaker).",
-            )
-            return ap
-
-        @staticmethod
-        def run_stage(
-            cfg: Any,
-            *,
-            pr_number: int,
-            skip_preflight: bool = False,
-            skip_fix_loop: bool = False,
-            max_iterations: int = 2,
-            gh: Any = None,
-        ) -> int:
-            """Stub: wird durch echte stage.run_stage in Wave 4b ersetzt."""
-            raise NotImplementedError(
-                "stage.run_stage nicht verfügbar — stage.py noch nicht auf main (Wave 4b). "
-                "Stub durch echte Implementierung ersetzen."
-            )
-
-    stage = _StageStub()  # type: ignore[assignment]
+from ai_review_pipeline.stages import stage  # Wave 4b: stage.py ist portiert
 
 
 # ---------------------------------------------------------------------------
