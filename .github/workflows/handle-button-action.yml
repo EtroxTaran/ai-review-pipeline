@@ -1,0 +1,73 @@
+---
+# handle-button-action.yml
+#
+# Discord-Button-Callback-Zielworkflow: wird via workflow_dispatch von n8n
+# angestoßen, nachdem ein Reviewer in Discord einen Button (approve/fix/manual)
+# gedrückt hat.
+#
+# n8n-Callback verifiziert Ed25519-Signatur + parst custom_id, dann dispatcht
+# diesen Workflow mit action/pr_number/user_id/target_repo.
+#
+# Für Phase-4 (Shadow-Mode): Dieser Workflow loggt nur. Echte PR-Aktionen
+# (Approve, Comment, Re-Review) werden später ergänzt.
+name: Handle Discord Button Action
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Button-Action (approve | fix | manual)
+        required: true
+        type: string
+      pr_number:
+        description: PR-Nummer im Target-Repo
+        required: true
+        type: string
+      user_id:
+        description: Discord User-ID des Klickers
+        required: true
+        type: string
+      target_repo:
+        description: Target-Repo im Format owner/name (default, EtroxTaran/ai-portal)
+        required: false
+        default: EtroxTaran/ai-portal
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          case "${{ inputs.action }}" in
+            approve|fix|manual) ;;
+            *) echo "::error::Unknown action: ${{ inputs.action }}"; exit 1 ;;
+          esac
+          if ! [[ "${{ inputs.pr_number }}" =~ ^[0-9]+$ ]]; then
+            echo "::error::pr_number not numeric: ${{ inputs.pr_number }}"
+            exit 1
+          fi
+
+      - name: Log dispatched action
+        run: |
+          echo "Action:      ${{ inputs.action }}"
+          echo "PR:          ${{ inputs.target_repo }}#${{ inputs.pr_number }}"
+          echo "User:        ${{ inputs.user_id }}"
+          echo "Dispatched:  $(date -u +%FT%TZ)"
+
+      - name: Summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Discord Button Action
+
+          | Field | Value |
+          |---|---|
+          | Action | \`${{ inputs.action }}\` |
+          | PR | \`${{ inputs.target_repo }}#${{ inputs.pr_number }}\` |
+          | Discord User | \`${{ inputs.user_id }}\` |
+          EOF
