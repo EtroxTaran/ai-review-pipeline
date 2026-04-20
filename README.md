@@ -39,13 +39,14 @@ Plan: `~/.claude/plans/reports-projects-ai-portal-docs-v2-40-a-iridescent-flask.
 - [x] Phase 3.3 — `common.py` extraction TDD (95 tests, 96% cov)
 - [x] Phase 3.4 — `discord_notify.py` (33 tests, 98% cov, ops-n8n webhook)
 - [x] Phase 3.5 — 10 workflow templates (9 ported + 1 new AC-validation)
+- [x] Phase 3.3 Wave 2 — `scoring.py`, `issue_context.py`, `metrics.py`, `metrics_summary.py`, `preflight.py`
 - [ ] Phase 3.2 — GitHub-Repo `EtroxTaran/ai-review-pipeline` anlegen + push (braucht User-Go)
-- [ ] Phase 3.3-Rest — Extract `scoring.py`, `consensus.py`, `fix_loop.py`, `nachfrage.py`, `auto_fix.py`, `metrics.py`, `issue_context.py`, `preflight.py`
-- [ ] Phase 3.3b — Stage-Runner: `code_review.py`, `cursor_review.py`, `security_review.py`, `design_review.py`, `stage.py` (orchestrator)
+- [ ] Phase 3.3 Wave 3 — `consensus.py`, `nachfrage.py`, `fix_loop.py`, `auto_fix.py`
+- [ ] Phase 3.3 Wave 4 — Stage-Runner: `code_review.py`, `cursor_review.py`, `security_review.py`, `design_review.py`, `stage.py` (orchestrator)
 - [ ] Phase 3.5b — `cli.py` für `ai-review` Console-Script (vereinfacht `ai-review-ac-validation.yml`)
 - [ ] Phase 3.6 — Dogfooding: Pipeline reviewt sich selbst
 
-**Current main:** 156/156 pytest green · Coverage 96.36% · stdlib + pyyaml + requests only.
+**Current main:** 256/256 pytest green · Coverage 93.73% · stdlib + pyyaml + requests only.
 
 ## License
 
