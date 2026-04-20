@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + dev dependencies
+        run: pip install -e '.[dev]'
+
+      - name: Run pytest with coverage
+        run: |
+          pytest \
+            --cov=ai_review_pipeline \
+            --cov-report=term \
+            --cov-fail-under=80
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true   # non-blocking — warnings only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install 'ruff>=0.6.0'
+
+      - name: Run ruff check
+        run: ruff check . || true   # non-blocking: log issues, never fail CI
+
+  yaml:
+    name: YAML lint (workflows)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true   # non-blocking — warnings only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint workflows/*.yml
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: {max: 120}}}" \
+            workflows/*.yml || true   # non-blocking

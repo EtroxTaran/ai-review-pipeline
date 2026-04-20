@@ -1,0 +1,48 @@
+# Self-Config für das ai-review-pipeline Repo (Phase 3.6 Dogfood)
+# Basiert auf schema/config.example.yaml — Self-Dogfooding: dieses Repo reviewt sich selbst.
+version: "1.0"
+
+reviewers:
+  codex: gpt-5
+  cursor: composer-2
+  gemini: gemini-2.5-pro
+  claude: claude-opus-4-7
+
+stages:
+  code_review:
+    enabled: true
+    blocking: true
+    timeout_seconds: 600
+  cursor_review:
+    enabled: true
+    blocking: false   # non-blocking — Cursor-Review als zusätzliche Perspektive
+  security:
+    enabled: true
+    blocking: true
+    timeout_seconds: 600
+  design:
+    enabled: true
+    blocking: false   # non-blocking — Design-Feedback ohne Merge-Block
+  ac_validation:
+    enabled: true
+    blocking: true
+    judge_model: gpt-5
+    second_opinion_model: claude-opus-4-7
+    min_coverage: 1.0   # 100% AC-Coverage Pflicht
+
+consensus:
+  success_threshold: 8
+  soft_threshold: 5
+  fail_closed_on_missing_stage: true   # fehlende Stage = pending (nie success)
+
+notifications:
+  target: discord
+  discord:
+    channel_id: "REPLACE_ME"   # Discord-Channel-ID im Nathan-Ops-Guild eintragen
+    mention_role: "@here"
+    sticky_message: true
+
+waivers:
+  min_reason_length: 30
+  allowed_labels:
+    - pipeline-bootstrap   # Bootstrap-Pain: erste 3 PRs dürfen admin-mergen mit diesem Label

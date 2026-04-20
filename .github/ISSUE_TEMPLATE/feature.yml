@@ -1,0 +1,74 @@
+name: Feature Request
+description: Propose a feature with Gherkin acceptance criteria
+title: "feat: "
+labels:
+  - feature
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Feature Request
+
+        Alle Felder ausfüllen, damit die AI-Review-Pipeline Stage 5 (AC-Validation) das Issue parsen kann.
+        Ohne saubere Gherkin-AC kann der PR nicht maschinell verifiziert werden.
+
+  - type: textarea
+    id: user_story
+    attributes:
+      label: User Story
+      description: "Als <Rolle> möchte ich <Funktion>, damit <Nutzen>."
+      placeholder: "Als Nico möchte ich ... damit ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria (Gherkin)
+      description: "Given-When-Then Szenarien. Jedes Szenario muss 1:1 auf einen Test mappbar sein."
+      value: |
+        ```gherkin
+        Scenario: <Kurztitel>
+          Given <Vorbedingung>
+          When <Aktion>
+          Then <erwartetes Ergebnis>
+
+        Scenario: <Kurztitel 2>
+          Given ...
+          When ...
+          Then ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: Definition of Done
+      value: |
+        - [ ] Code nach TDD implementiert (Red → Green → Refactor)
+        - [ ] Unit-Tests pro AC
+        - [ ] `pytest --cov=ai_review_pipeline --cov-fail-under=80` grün
+        - [ ] PR mit `Closes #<this>` verlinkt
+        - [ ] AI-Review-Pipeline Consensus ≥ 8
+    validations:
+      required: true
+
+  - type: input
+    id: priority
+    attributes:
+      label: Priority
+      description: "P0 (critical), P1 (high), P2 (medium), P3 (low)"
+      value: P2
+    validations:
+      required: false
+
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: "XS (<1h), S (<4h), M (<1d), L (<3d), XL (>3d)"
+      value: M
+    validations:
+      required: false

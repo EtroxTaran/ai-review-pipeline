@@ -1,0 +1,86 @@
+# Phase 3.6 Dogfood — erste 3 Runs dürfen admin-mergen bei Stage-Issues (Bootstrap-Pain)
+#
+# Self-Review des ai-review-pipeline-Repos via eigene extrahierte Pipeline.
+# Manueller Trigger (workflow_dispatch) für Phase 3.6-Bootstrap.
+# Nach erfolgreichen 3+ Runs: Trigger auf pull_request umstellen.
+#
+# Runner-Label: [self-hosted, r2d2, ai-review]
+# Secrets benötigt:
+#   - GITHUB_TOKEN     (automatisch von GitHub bereitgestellt)
+#   - DISCORD_NOTIFICATION_WEBHOOK  (optional — leer = kein Alert, kein Crash)
+
+name: Dogfood Self-Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR-Nummer für den Self-Review (leer = nur dry-run Consensus)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  checks: write
+
+jobs:
+  self-review:
+    name: AI Self-Review Pipeline
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Stage 1 — Code Review (Codex)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          ai-review stage code-review ${PR_NUMBER:+--pr "$PR_NUMBER"}
+
+      - name: Stage 2 — Security Review (Gemini + semgrep)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          ai-review stage security ${PR_NUMBER:+--pr "$PR_NUMBER"}
+
+      - name: Stage 3 — Design Review (Claude)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          ai-review stage design ${PR_NUMBER:+--pr "$PR_NUMBER"}
+
+      - name: Stage 4 — AC Validation (Codex primary + Claude second-opinion)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          ai-review stage ac-validation ${PR_NUMBER:+--pr "$PR_NUMBER"}
+
+      - name: Consensus Aggregation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          ai-review consensus ${PR_NUMBER:+--pr "$PR_NUMBER"}
