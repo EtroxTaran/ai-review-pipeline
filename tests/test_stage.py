@@ -729,5 +729,83 @@ class BuildReviewPromptTaskContextTests(unittest.TestCase):
         self.assertNotIn("## Task:", prompt)
 
 
+class StatusContextPrefixArgParserTests(unittest.TestCase):
+    """Scenario 1 (Red): build_arg_parser exposes --status-context-prefix."""
+
+    def test_parser_has_status_context_prefix_flag(self) -> None:
+        # Arrange
+        ap = stage.build_arg_parser("code")
+
+        # Act
+        args = ap.parse_args(["--pr", "1", "--status-context-prefix", "ai-review-v2"])
+
+        # Assert
+        self.assertEqual(args.status_context_prefix, "ai-review-v2")
+
+    def test_parser_status_context_prefix_default_none(self) -> None:
+        ap = stage.build_arg_parser("code")
+        args = ap.parse_args(["--pr", "1"])
+        self.assertIsNone(args.status_context_prefix)
+
+
+class RunStageStatusContextPrefixTests(unittest.TestCase):
+    """Scenario 1 (Red): run_stage propagates status_context_prefix to commit status context."""
+
+    @patch("subprocess.run")
+    def test_status_context_uses_custom_prefix(self, mock_subprocess: Any) -> None:
+        # Arrange
+        mock_subprocess.return_value = MagicMock(returncode=0)
+        gh = _make_fake_gh()
+        reviewer_fn = MagicMock(return_value="LGTM")
+        cfg = _make_stage_cfg(reviewer_fn=reviewer_fn, name="code")
+
+        # Act
+        with patch("ai_review_pipeline.common.git_diff_stat", return_value="x"), \
+             patch("ai_review_pipeline.common.git_diff_full", return_value="x"), \
+             patch("ai_review_pipeline.common.detect_rate_limit", return_value=False), \
+             patch("ai_review_pipeline.common.build_sticky_comment", return_value=""), \
+             patch("ai_review_pipeline.issue_context.build_task_context", return_value=""), \
+             patch.object(stage, "load_prompt", return_value="## Prompt"):
+            result = stage.run_stage(
+                cfg, pr_number=5, gh=gh, skip_preflight=True,
+                status_context_prefix="ai-review-v2",
+            )
+
+        # Assert: exit code green, context must be ai-review-v2/code
+        self.assertEqual(result, 0)
+        all_contexts = [
+            c.kwargs.get("context", "") for c in gh.set_commit_status.call_args_list
+        ]
+        self.assertTrue(
+            any("ai-review-v2/code" in ctx for ctx in all_contexts),
+            f"Expected 'ai-review-v2/code' in contexts, got: {all_contexts}",
+        )
+
+    @patch("subprocess.run")
+    def test_status_context_uses_default_prefix_when_none(self, mock_subprocess: Any) -> None:
+        # Arrange: no prefix → original cfg.status_context unchanged
+        mock_subprocess.return_value = MagicMock(returncode=0)
+        gh = _make_fake_gh()
+        reviewer_fn = MagicMock(return_value="LGTM")
+        cfg = _make_stage_cfg(reviewer_fn=reviewer_fn, name="code")
+
+        with patch("ai_review_pipeline.common.git_diff_stat", return_value="x"), \
+             patch("ai_review_pipeline.common.git_diff_full", return_value="x"), \
+             patch("ai_review_pipeline.common.detect_rate_limit", return_value=False), \
+             patch("ai_review_pipeline.common.build_sticky_comment", return_value=""), \
+             patch("ai_review_pipeline.issue_context.build_task_context", return_value=""), \
+             patch.object(stage, "load_prompt", return_value="## Prompt"):
+            result = stage.run_stage(cfg, pr_number=5, gh=gh, skip_preflight=True)
+
+        self.assertEqual(result, 0)
+        all_contexts = [
+            c.kwargs.get("context", "") for c in gh.set_commit_status.call_args_list
+        ]
+        self.assertTrue(
+            any("ai-review/code" in ctx for ctx in all_contexts),
+            f"Expected 'ai-review/code' in contexts, got: {all_contexts}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
