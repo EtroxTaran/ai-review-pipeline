@@ -1,0 +1,221 @@
+# Dogfood-Light: runs on github-hosted, validates ai-review ac-validate against own PR body.
+# Non-blocking during bootstrap. Promote to required in Phase 4.
+#
+# Zweck: Echtes Dogfooding OHNE r2d2-Abhängigkeit.
+# Installiert das eigene Package, holt PR-Metadaten via gh CLI, ruft
+# `ai-review ac-validate` gegen den eigenen PR-Body auf und schreibt
+# Commit-Status `ai-review/ac-validation-self` (informational, non-required).
+
+name: Dogfood Light — AC-Validate Self
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR-Nummer (leer = aktueller Event-PR)"
+        required: false
+        default: ""
+
+concurrency:
+  group: dogfood-light-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  ac-validate-self:
+    name: AC-Validate Self (Dogfood Light)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package (editable)
+        run: pip install -e .
+
+      - name: Smoke-check — ai-review version
+        run: ai-review --version
+
+      - name: Fetch PR body + linked issues + diff into temp files
+        id: fetch_data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PR-Nummer: entweder aus workflow_dispatch-Input oder aus PR-Event
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Kein PR-Kontext — workflow_dispatch ohne pr_number. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          WORKDIR=$(mktemp -d)
+          echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
+          echo "skip=false"       >> "$GITHUB_OUTPUT"
+
+          # PR-Body + closing issues + geänderte Files in eine JSON-Datei
+          gh pr view "$PR_NUMBER" --json body,closingIssuesReferences,files \
+            > "$WORKDIR/pr_meta.json"
+
+          # PR-Body in eigene Datei
+          jq -r '.body // ""' "$WORKDIR/pr_meta.json" > "$WORKDIR/pr_body.txt"
+
+          # Geänderte Files als komma-separierte Liste
+          CHANGED_FILES=$(jq -r '[.files[].path] | join(",")' "$WORKDIR/pr_meta.json")
+          echo "changed_files=$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+
+          # Diff (cap 30 kB)
+          gh pr diff "$PR_NUMBER" 2>/dev/null \
+            | head -c 30000 > "$WORKDIR/pr_diff.txt" || true
+
+          # Linked-Issues-JSON aufbauen: { "N": ["issue body text"] }
+          ISSUE_NUMS=$(jq -r '.closingIssuesReferences[].number // empty' "$WORKDIR/pr_meta.json")
+          echo "{}" > "$WORKDIR/linked_issues.json"
+          for ISSUE_NUM in $ISSUE_NUMS; do
+            ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body // ""' 2>/dev/null || echo "")
+            python3 -c "
+          import json, sys
+          current = json.load(open('$WORKDIR/linked_issues.json'))
+          current[str($ISSUE_NUM)] = [sys.argv[1]]
+          json.dump(current, open('$WORKDIR/linked_issues.json', 'w'))
+          " "$ISSUE_BODY"
+          done
+
+      - name: Run ai-review ac-validate (Dogfood Self-Check)
+        id: ac_validation
+        if: steps.fetch_data.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKDIR: ${{ steps.fetch_data.outputs.workdir }}
+          CHANGED_FILES: ${{ steps.fetch_data.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+
+          # ai-review ac-validate; exit-code sammeln ohne Job sofort zu beenden
+          set +e
+          ai-review ac-validate \
+            --pr-body-file       "$WORKDIR/pr_body.txt" \
+            --linked-issues-file "$WORKDIR/linked_issues.json" \
+            --changed-files      "$CHANGED_FILES" \
+            --diff-file          "$WORKDIR/pr_diff.txt" \
+            > "$WORKDIR/ac_output.txt" 2>&1
+          AC_EXIT=$?
+          set -e
+
+          cat "$WORKDIR/ac_output.txt"
+
+          # Score + Confidence aus erster Ausgabezeile parsen
+          # Format: "✅ AC-Validation: score=X/10, confidence=Y.YY, waived=Z"
+          FIRST_LINE=$(head -n1 "$WORKDIR/ac_output.txt" | tr -cd '[:print:]')
+          SCORE=$(echo "$FIRST_LINE"      | grep -oP 'score=\K[0-9]+' || echo "0")
+          CONFIDENCE=$(echo "$FIRST_LINE" | grep -oP 'confidence=\K[0-9.]+' || echo "0.0")
+          WAIVED=$(echo "$FIRST_LINE"     | grep -oP 'waived=\K\w+' || echo "False")
+
+          # State aus Score ableiten (spiegelt _handle_ac_validate-Logik)
+          if   [ "$SCORE" -ge 8 ]; then STATE="success"
+          elif [ "$SCORE" -ge 5 ]; then STATE="pending"
+          else                          STATE="failure"
+          fi
+
+          # Informational-Override: Non-blocking während Bootstrap
+          # State auf "success" forcen, damit der Status nie blockt.
+          # Echter Score bleibt in der Description sichtbar.
+          REPORTED_STATE="success"
+
+          CONF_PCT=$(python3 -c "print(round(float('${CONFIDENCE}') * 100))" 2>/dev/null || echo "?")
+          SUMMARY="[dogfood-light] AC-Coverage ${SCORE}/10 (${CONF_PCT}% confidence) — waived=${WAIVED}"
+
+          echo "state=$STATE"                   >> "$GITHUB_OUTPUT"
+          echo "reported_state=$REPORTED_STATE" >> "$GITHUB_OUTPUT"
+          echo "score=$SCORE"                   >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY"               >> "$GITHUB_OUTPUT"
+          echo "exit_code=$AC_EXIT"             >> "$GITHUB_OUTPUT"
+          echo "workdir=$WORKDIR"               >> "$GITHUB_OUTPUT"
+
+      - name: Set commit status ai-review/ac-validation-self
+        if: steps.fetch_data.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          STATE: ${{ steps.ac_validation.outputs.reported_state }}
+          SUMMARY: ${{ steps.ac_validation.outputs.summary }}
+        run: |
+          set -euo pipefail
+          TARGET_URL="${GITHUB_SERVER_URL}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh api "repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
+            -f state="$STATE" \
+            -f context="ai-review/ac-validation-self" \
+            -f description="${SUMMARY:0:140}" \
+            -f target_url="$TARGET_URL"
+          echo "Commit-Status gesetzt: $STATE — $SUMMARY"
+
+      - name: Post AC-Validation-Self report as PR comment (score < 8 only)
+        if: |
+          steps.fetch_data.outputs.skip != 'true' &&
+          steps.ac_validation.outputs.state != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          STATE: ${{ steps.ac_validation.outputs.state }}
+          SCORE: ${{ steps.ac_validation.outputs.score }}
+          WORKDIR: ${{ steps.ac_validation.outputs.workdir }}
+        run: |
+          set -euo pipefail
+
+          FINDINGS=$(tail -n +2 "$WORKDIR/ac_output.txt" | tr -cd '[:print:]\n')
+
+          BODY=$(cat <<'COMMENT_EOF'
+          <!-- ai-review-ac-validation-self -->
+          ## Dogfood-Light: AC-Validation Self-Check
+
+          **Score:** SCORE_PLACEHOLDER/10 | **Status:** STATE_PLACEHOLDER | _(non-blocking — bootstrap phase)_
+
+          FINDINGS_PLACEHOLDER
+
+          _Waiver: `/ai-review ac-waiver <reason ≥30 chars>`_
+          COMMENT_EOF
+          )
+
+          BODY="${BODY//SCORE_PLACEHOLDER/$SCORE}"
+          BODY="${BODY//STATE_PLACEHOLDER/$STATE}"
+          BODY="${BODY//FINDINGS_PLACEHOLDER/$FINDINGS}"
+
+          # Existierenden Comment updaten oder neu posten
+          EXISTING_ID=$(gh api \
+            "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("ai-review-ac-validation-self")) | .id' \
+            | head -n1 || echo "")
+
+          if [ -n "$EXISTING_ID" ]; then
+            gh api -X PATCH \
+              "repos/${{ github.repository }}/issues/comments/$EXISTING_ID" \
+              -f body="$BODY" >/dev/null
+            echo "Dogfood-Light-Comment aktualisiert (id=$EXISTING_ID)"
+          else
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+            echo "Dogfood-Light-Comment neu gepostet"
+          fi
+
+      - name: Cleanup temp files
+        if: always()
+        env:
+          WORKDIR: ${{ steps.fetch_data.outputs.workdir || '' }}
+        run: |
+          [ -n "$WORKDIR" ] && rm -rf "$WORKDIR" || true

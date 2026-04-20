@@ -1,0 +1,189 @@
+# Tag-based Release — build → GitHub Release + PyPI (draft/gated).
+#
+# Trigger: push tag v* (z.B. v0.1.0) oder workflow_dispatch mit dry-run-Flag.
+# Permissions: contents:write für GitHub-Release, id-token:write für PyPI OIDC.
+#
+# PyPI-Publish ist STANDARDMÄSSIG DEAKTIVIERT.
+# Aktivieren: Repository-Variable PYPI_PUBLISH=true setzen
+# + Trusted-Publisher in PyPI für EtroxTaran/ai-review-pipeline konfigurieren.
+# Kein Secret im Klartext — ausschließlich OIDC (keyless).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run (kein PyPI-Publish, kein Release-Create)"
+        type: boolean
+        required: false
+        default: true
+      tag_override:
+        description: "Tag/Version für dry-run (z.B. v0.1.0-dev)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write    # GitHub Release erstellen + Assets hochladen
+  id-token: write    # OIDC für PyPI Trusted Publisher
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Build — Wheel + sdist bauen und als Artifact hochladen
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (wheel + sdist)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag: ${{ steps.get_version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Determine version / tag
+        id: get_version
+        run: |
+          if [ -n "${{ github.event.inputs.tag_override }}" ]; then
+            TAG="${{ github.event.inputs.tag_override }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v0.0.0-dev"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing: tag=$TAG version=$VERSION"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build wheel + sdist
+        run: python -m build
+        # Erzeugt: dist/ai_review_pipeline-<version>-py3-none-any.whl
+        #          dist/ai_review_pipeline-<version>.tar.gz
+
+      - name: Verify dist contents
+        run: |
+          ls -lh dist/
+          # Smoke-check: whl existiert und ist nicht leer
+          WHL=$(ls dist/*.whl 2>/dev/null | head -n1)
+          [ -n "$WHL" ] && [ -s "$WHL" ] || (echo "ERROR: kein .whl in dist/" && exit 1)
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 2: GitHub Release — Draft bei dry-run, echtes Release bei Tag-Push
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout (für release notes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Verify artifacts present
+        run: ls -lh dist/
+
+      - name: Create GitHub Release (echtes Release bei Tag-Push)
+        if: github.ref_type == 'tag' && github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --generate-notes \
+            --title "Release $TAG"
+          echo "GitHub Release erstellt: $TAG"
+
+      - name: Create Draft Release (workflow_dispatch dry-run)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          echo "[dry-run] Würde GitHub Release '$TAG' mit folgenden Artifacts erstellen:"
+          ls -lh dist/
+          echo "[dry-run] gh release create $TAG dist/* --generate-notes --draft"
+
+  # ---------------------------------------------------------------------------
+  # Job 3: PyPI Publish — STANDARDMÄSSIG DEAKTIVIERT
+  # Aktivieren: PYPI_PUBLISH=true in Repository-Variables setzen
+  # + PyPI Trusted-Publisher für EtroxTaran/ai-review-pipeline konfigurieren.
+  # ---------------------------------------------------------------------------
+  pypi-publish:
+    name: PyPI Publish (gated)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Nur bei echtem Tag-Push (kein dry-run) UND aktiviertem Repository-Var.
+    # workflow_dispatch wird hier nie veröffentlichen — sicherer Default.
+    if: |
+      github.ref_type == 'tag' &&
+      github.event_name == 'push' &&
+      vars.PYPI_PUBLISH == 'true'
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ai-review-pipeline
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Verify artifacts present
+        run: ls -lh dist/
+
+      # -----------------------------------------------------------------------
+      # ACHTUNG: Der folgende Publish-Step ist AUSKOMMENTIERT.
+      # AKTIVIEREN wenn:
+      #   1. PyPI Trusted-Publisher für EtroxTaran/ai-review-pipeline gesetzt ist
+      #      (https://pypi.org/manage/account/publishing/ oder Projekt-Settings)
+      #   2. Repository-Variable PYPI_PUBLISH=true gesetzt ist
+      # Kein API-Token, kein Secret im Klartext — OIDC (keyless) via id-token:write.
+      # -----------------------------------------------------------------------
+      # - name: Publish to PyPI (Trusted Publisher / OIDC)
+      #   uses: pypa/gh-action-pypi-publish@release/v1
+      #   with:
+      #     # repository-url: https://test.pypi.org/legacy/  # Uncomment zum Testen auf TestPyPI
+      #     skip-existing: false
+      #     verbose: true
+
+      - name: PyPI Publish geskippt (Trusted Publisher noch nicht konfiguriert)
+        run: |
+          echo "PyPI publish skipped — set PYPI_PUBLISH=true in repository vars to enable"
+          echo "Zusätzlich erforderlich: PyPI Trusted Publisher für dieses Repo konfigurieren."
+          echo "Doku: https://docs.pypi.org/trusted-publishers/adding-a-publisher/"
+          echo ""
+          echo "Artifacts die published werden würden:"
+          ls -lh dist/
