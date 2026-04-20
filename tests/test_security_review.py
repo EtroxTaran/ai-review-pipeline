@@ -487,25 +487,28 @@ class TestBuildArgParserStub:
 
 
 # ---------------------------------------------------------------------------
-# Test 13 — run_stage Stub gibt 2 zurück (Wave 4b nicht implementiert)
+# Test 13 — run_stage ist jetzt die echte stage.run_stage (Wave 4b abgeschlossen)
 # ---------------------------------------------------------------------------
 
 class TestRunStageStub:
-    def test_run_stage_stub_returns_2(self, capsys) -> None:
-        """Arrange: run_stage mit Stub aufrufen.
+    def test_run_stage_returns_error_without_gh_access(self, capsys) -> None:
+        """Wave 4b: run_stage ist jetzt die echte stage.run_stage.
+
+        Arrange: run_stage ohne echte GH-API aufrufen (kein git remote).
         Act: Funktion aufrufen.
-        Assert: Rückgabe ist 2 (= nicht implementiert), Warnung auf stderr.
+        Assert: Rückgabe ist 2 (= Fehler bei PR-Fetch), Fehlermeldung auf stderr.
         """
         # Arrange
         from ai_review_pipeline.stages.security_review import run_stage
 
-        # Act
+        # Act — kein gh-Client → Fehler beim PR-Fetch → exit 2
         result = run_stage(CONFIG, pr_number=99)
 
-        # Assert
+        # Assert — exit 2 = error path (PR konnte nicht geladen werden)
         assert result == 2
         captured = capsys.readouterr()
-        assert "Wave 4b" in captured.err or "nicht portiert" in captured.err
+        # Echte stage.run_stage schreibt "Failed to fetch PR" auf stderr
+        assert "99" in captured.err or "PR" in captured.err
 
 
 # ---------------------------------------------------------------------------

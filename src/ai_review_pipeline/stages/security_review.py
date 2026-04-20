@@ -32,63 +32,22 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from ai_review_pipeline import common
 
+# Wave 4b: stage.py ist portiert — direkter Import.
+from ai_review_pipeline.stages import stage
 
-# ---------------------------------------------------------------------------
-# Wave 4b Stub: StageConfig + build_arg_parser
-# Werden in Wave 4b durch die portierte stage.py ersetzt.
-# TODO(wave-4b): `from ai_review_pipeline import stage` + echte StageConfig nutzen.
-# ---------------------------------------------------------------------------
+# Convenience-Alias damit bestehender Code weiterhin StageConfig, build_arg_parser,
+# run_stage direkt referenzieren kann (abwärtskompatibel mit Tests).
+StageConfig = stage.StageConfig
+build_arg_parser = stage.build_arg_parser
+run_stage = stage.run_stage
 
 ReviewerFn = Callable[..., str]
 """(prompt, worktree, base_branch, **kwargs) → reviewer output string."""
-
-
-@dataclass
-class StageConfig:
-    """Stub für stage.StageConfig — Wave 4b ersetzt das durch das echte Modul."""
-
-    name: str
-    status_context: str
-    sticky_marker: str
-    title_prefix: str
-    prompt_file: str
-    reviewer_label: str
-    ok_sentinels: tuple[str, ...]
-    reviewer_fn: ReviewerFn
-    path_filter: Callable[[list[str]], bool] | None = None
-    treat_no_findings_as_clean: bool = False
-
-
-def build_arg_parser(stage_name: str):  # noqa: ANN201
-    """Stub für stage.build_arg_parser — Wave 4b ersetzt das."""
-    import argparse
-    ap = argparse.ArgumentParser(description=f"AI {stage_name} review stage")
-    ap.add_argument("--pr", type=int, required=True, help="PR number")
-    ap.add_argument("--skip-preflight", action="store_true")
-    ap.add_argument("--skip-fix-loop", action="store_true")
-    ap.add_argument("--max-iterations", type=int, default=2)
-    return ap
-
-
-def run_stage(cfg: StageConfig, *, pr_number: int, **kwargs) -> int:  # noqa: ANN001, ANN003
-    """Stub für stage.run_stage — Wave 4b ersetzt das.
-
-    TODO(wave-4b): Durch `from ai_review_pipeline import stage; stage.run_stage(...)` ersetzen.
-    """
-    # Minimale Implementierung: gibt 2 zurück (= error/nicht implementiert)
-    # damit pipeline-Tests sauber fehlschlagen und nicht silent success zeigen.
-    print(
-        f"⚠️  stage.run_stage ist noch nicht portiert (Wave 4b). "
-        f"Stage '{cfg.name}' PR #{pr_number} nicht ausgeführt.",
-        file=sys.stderr,
-    )
-    return 2
 
 
 # ---------------------------------------------------------------------------
