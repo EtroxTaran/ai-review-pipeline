@@ -10,10 +10,28 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Nico Rimmele", email = "etrox@etrox.de" }]
+keywords = ["ai", "code-review", "gherkin", "acceptance-criteria", "github-actions"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 dependencies = [
     "pyyaml>=6.0.2",
     "requests>=2.32.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/EtroxTaran/ai-review-pipeline"
+Repository = "https://github.com/EtroxTaran/ai-review-pipeline"
+Issues = "https://github.com/EtroxTaran/ai-review-pipeline/issues"
+Changelog = "https://github.com/EtroxTaran/ai-review-pipeline/releases"
 
 [project.optional-dependencies]
 gherkin = ["gherkin-official==29.0.0"]
