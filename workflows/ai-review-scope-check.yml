@@ -1,3 +1,4 @@
+---
 # NOTE: parametrized from ai-portal@2026-04-20
 # Changes:
 #   - github.repository bleibt dynamisch (war bereits expressions, nicht hardcoded)
@@ -7,6 +8,9 @@
 #   - Keine projekt-spezifischen Änderungen notwendig — vollständig generisch
 
 name: AI Review — Scope Check
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Schnelles Regex-Gate vor den LLM-Stages. Validiert dass die PR genug
 # Kontext hat, damit Reviewer sie fachlich beurteilen können:

@@ -1,3 +1,4 @@
+---
 # NOTE: parametrized from ai-portal@2026-04-20
 # Changes:
 #   - github.repository bleibt dynamisch (kein hardcoded EtroxTaran/ai-portal)
@@ -11,6 +12,9 @@
 #   - Security: Nur PR-Author darf kommandieren (check bleibt erhalten)
 
 name: AI Review — Nachfrage-Response
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Triggert auf PR-Comment mit einem der 3 Kommandos:
 #   - /ai-review approve                    → Consensus-Override auf success

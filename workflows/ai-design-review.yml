@@ -1,3 +1,4 @@
+---
 # NOTE: parametrized from ai-portal@2026-04-20
 # Changes:
 #   - python3 -m scripts.ai-review.design_review → python -m ai_review_pipeline.stages.design_review
@@ -11,6 +12,9 @@
 #   - Setup Python + pip install ai-review-pipeline Steps ergänzt
 
 name: AI Design Review (Stage 3)
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Stage 3: Claude Opus 4.7, DESIGN.md-Konformität. Skippt sich selbst
 # wenn keine UI-Files im Diff sind (path-filter im Script, nicht hier im YAML,

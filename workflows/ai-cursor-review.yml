@@ -1,3 +1,4 @@
+---
 # NOTE: parametrized from ai-portal@2026-04-20
 # Changes:
 #   - python3 -m scripts.ai-review.cursor_review → python -m ai_review_pipeline.stages.cursor_review
@@ -10,6 +11,9 @@
 #   - Setup Python + pip install ai-review-pipeline Steps ergänzt
 
 name: AI Code Review (Stage 1b — Cursor)
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Stage 1b: Second opinion via Cursor Agent CLI (composer-2).
 # Läuft PARALLEL zu Stage 1 (Codex) auf pull_request.synchronize — kein

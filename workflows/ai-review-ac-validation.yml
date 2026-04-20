@@ -1,3 +1,4 @@
+---
 # NOTE: neuer Workflow (Stage 5), erstellt 2026-04-20
 # Wave 5 — migrated to ai-review CLI 2026-04-20:
 #   Interim python3 -c Inline-Block ersetzt durch ai-review ac-validate.
@@ -5,6 +6,9 @@
 #   Commit-Status und PR-Comment-Posting bleibt in Shell (nicht Teil der CLI).
 
 name: AI Review — AC Validation (Stage 5)
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Stage 5: Acceptance-Criteria-Validation.
 # Prüft ob die PR die Gherkin-ACs aus dem verlinkten Issue abdeckt.

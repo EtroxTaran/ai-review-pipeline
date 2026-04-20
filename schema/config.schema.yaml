@@ -1,3 +1,4 @@
+---
 # JSON Schema (YAML-dialect) für .ai-review/config.yaml
 # Projekte, die das pip-Paket `ai-review-pipeline` konsumieren, validieren ihre
 # lokale Config gegen diese Datei. Fail-Closed bei Schema-Violations.

@@ -1,3 +1,4 @@
+---
 # NOTE: parametrized from ai-portal@2026-04-20
 # Changes:
 #   - python3 -m scripts.ai-review.auto_fix → python -m ai_review_pipeline.stages.auto_fix
@@ -12,6 +13,9 @@
 #   - python -m ai_review_pipeline.stages.auto_fix → ai-review auto-fix
 
 name: AI Review — Auto-Fix
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # Cross-stage Auto-Fix-Agent — getriggert via workflow_dispatch.
 # Aufrufer:
