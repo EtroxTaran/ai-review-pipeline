@@ -523,123 +523,164 @@ class ParseScoreEdgeCaseTests(unittest.TestCase):
 
 
 class MaybeAlertDisagreementTests(unittest.TestCase):
-    """Deckt _maybe_alert_disagreement-Pfade ab (Webhook + pr_number Kombos)."""
+    """Deckt _maybe_alert_disagreement-Pfade ab (Discord config + pr_number Kombos)."""
 
     def setUp(self) -> None:
-        # Stelle sicher, dass kein echter Webhook in der Umgebung steckt
-        os.environ.pop("TELEGRAM_NOTIFICATION_WEBHOOK", None)
         os.environ.pop("GITHUB_SERVER_URL", None)
 
     def tearDown(self) -> None:
-        os.environ.pop("TELEGRAM_NOTIFICATION_WEBHOOK", None)
         os.environ.pop("GITHUB_SERVER_URL", None)
 
-    def test_no_webhook_set_is_noop(self) -> None:
-        # Disagreement ohne Webhook → kein Crash, kein Alert
+    def _discord_config(self) -> dict:
+        return {
+            "notifications": {
+                "target": "discord",
+                "discord": {
+                    "channel_id": "123456789012345678",
+                    "mention_role": "@here",
+                    "sticky_message": False,
+                },
+            }
+        }
+
+    def test_no_discord_config_is_noop(self) -> None:
+        # Disagreement ohne Discord-Config → kein Crash, notify_discord gibt False zurück
         stage_states = {
             common.STATUS_CODE: "success",
             common.STATUS_CODE_CURSOR: "failure",
         }
         # Sollte kein Exception werfen
         consensus._maybe_alert_disagreement(
-            sha="abc", stage_states=stage_states, pr_number=42,
+            sha="abc", stage_states=stage_states, pr_number=42, config={},
         )
 
-    def test_with_webhook_and_pr_number_calls_alert(self) -> None:
-        # Mit Webhook + pr_number wird alert aufgerufen — injiziere fake_http
-        # via mock, damit kein echter Netz-Call nötig ist.
+    def test_with_discord_config_and_pr_number_calls_notify_discord(self) -> None:
+        # Mit Discord-Config + pr_number wird notify_discord aufgerufen.
         import unittest.mock as mock
 
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
         stage_states = {
             common.STATUS_CODE: "success",
             common.STATUS_CODE_CURSOR: "failure",
         }
         with mock.patch(
-            "ai_review_pipeline.telegram_alert._default_http_post",
+            "ai_review_pipeline.discord_notify.notify_discord",
             return_value=True,
-        ):
+        ) as mock_notify:
             consensus._maybe_alert_disagreement(
                 sha="abc", stage_states=stage_states, pr_number=42,
+                config=self._discord_config(),
             )
+        mock_notify.assert_called_once()
+        payload = mock_notify.call_args[0][0]
+        assert payload.event_type == "disagreement"
+        assert payload.pr_number == 42
 
-    def test_with_webhook_and_pr_number_exception_swallowed(self) -> None:
-        # Wenn send_disagreement_alert eine Exception wirft → wird geschluckt
+    def test_with_discord_config_and_pr_number_exception_swallowed(self) -> None:
+        # Wenn notify_discord eine Exception wirft → wird geschluckt
         import unittest.mock as mock
 
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
         stage_states = {
             common.STATUS_CODE: "success",
             common.STATUS_CODE_CURSOR: "failure",
         }
         with mock.patch(
-            "ai_review_pipeline.telegram_alert.send_disagreement_alert",
+            "ai_review_pipeline.discord_notify.notify_discord",
             side_effect=RuntimeError("network down"),
         ):
             # Kein Exception nach außen
             consensus._maybe_alert_disagreement(
                 sha="abc", stage_states=stage_states, pr_number=42,
+                config=self._discord_config(),
             )
 
-    def test_with_webhook_but_no_pr_number_is_noop(self) -> None:
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
+    def test_with_discord_config_but_no_pr_number_is_noop(self) -> None:
+        import unittest.mock as mock
+
         stage_states = {
             common.STATUS_CODE: "success",
             common.STATUS_CODE_CURSOR: "failure",
         }
-        # pr_number=None → früher Return, kein HTTP-Call
-        consensus._maybe_alert_disagreement(
-            sha="abc", stage_states=stage_states, pr_number=None,
-        )
+        with mock.patch(
+            "ai_review_pipeline.discord_notify.notify_discord",
+        ) as mock_notify:
+            # pr_number=None → früher Return, kein notify_discord-Call
+            consensus._maybe_alert_disagreement(
+                sha="abc", stage_states=stage_states, pr_number=None,
+                config=self._discord_config(),
+            )
+        mock_notify.assert_not_called()
 
     def test_agreement_skips_alert(self) -> None:
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
+        import unittest.mock as mock
+
         stage_states = {
             common.STATUS_CODE: "success",
             common.STATUS_CODE_CURSOR: "success",
         }
-        # Beide gleich → kein Alert
-        consensus._maybe_alert_disagreement(
-            sha="abc", stage_states=stage_states, pr_number=42,
-        )
+        with mock.patch(
+            "ai_review_pipeline.discord_notify.notify_discord",
+        ) as mock_notify:
+            # Beide gleich → kein Alert
+            consensus._maybe_alert_disagreement(
+                sha="abc", stage_states=stage_states, pr_number=42,
+                config=self._discord_config(),
+            )
+        mock_notify.assert_not_called()
 
     def test_missing_cursor_state_skips_alert(self) -> None:
-        # STATUS_CODE_CURSOR fehlt → not cursor → früher Return (L77)
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
+        # STATUS_CODE_CURSOR fehlt → not cursor → früher Return
+        import unittest.mock as mock
+
         stage_states = {
             common.STATUS_CODE: "success",
             # STATUS_CODE_CURSOR fehlt absichtlich
         }
-        consensus._maybe_alert_disagreement(
-            sha="abc", stage_states=stage_states, pr_number=42,
-        )
+        with mock.patch(
+            "ai_review_pipeline.discord_notify.notify_discord",
+        ) as mock_notify:
+            consensus._maybe_alert_disagreement(
+                sha="abc", stage_states=stage_states, pr_number=42,
+                config=self._discord_config(),
+            )
+        mock_notify.assert_not_called()
 
     def test_missing_code_state_skips_alert(self) -> None:
-        # STATUS_CODE fehlt → not code → früher Return (L77)
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
+        # STATUS_CODE fehlt → not code → früher Return
+        import unittest.mock as mock
+
         stage_states = {
             # STATUS_CODE fehlt absichtlich
             common.STATUS_CODE_CURSOR: "failure",
         }
-        consensus._maybe_alert_disagreement(
-            sha="abc", stage_states=stage_states, pr_number=42,
-        )
+        with mock.patch(
+            "ai_review_pipeline.discord_notify.notify_discord",
+        ) as mock_notify:
+            consensus._maybe_alert_disagreement(
+                sha="abc", stage_states=stage_states, pr_number=42,
+                config=self._discord_config(),
+            )
+        mock_notify.assert_not_called()
 
 
-class AggregateTelegramAlertTests(unittest.TestCase):
-    """Deckt Telegram-Alert-Pfad in aggregate() ab (soft-consensus + webhook)."""
+class AggregateDiscordAlertTests(unittest.TestCase):
+    """Deckt Discord-Alert-Pfad in aggregate() ab (soft-consensus + disagreement)."""
 
-    def setUp(self) -> None:
-        os.environ.pop("TELEGRAM_NOTIFICATION_WEBHOOK", None)
+    def _discord_config(self) -> dict:
+        return {
+            "notifications": {
+                "target": "discord",
+                "discord": {
+                    "channel_id": "123456789012345678",
+                    "mention_role": "@here",
+                    "sticky_message": False,
+                },
+            }
+        }
 
-    def tearDown(self) -> None:
-        os.environ.pop("TELEGRAM_NOTIFICATION_WEBHOOK", None)
-
-    def test_soft_consensus_with_webhook_sends_alert_no_crash(self) -> None:
-        # Webhook gesetzt → Alert-Pfad wird beschritten; HTTP via Mock.
+    def test_soft_consensus_with_discord_config_sends_alert_no_crash(self) -> None:
+        # Discord konfiguriert → Alert-Pfad wird beschritten; HTTP via Mock.
         import unittest.mock as mock
 
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
         gh = FakeStatusDetailGh({
             common.STATUS_CODE: ("success", "score: 8/10 (green)"),
             common.STATUS_CODE_CURSOR: ("failure", "score: 5/10 (soft)"),
@@ -647,17 +688,26 @@ class AggregateTelegramAlertTests(unittest.TestCase):
             common.STATUS_DESIGN: ("success", "score: 9/10"),
         })
         with mock.patch(
-            "ai_review_pipeline.telegram_alert._default_http_post",
+            "ai_review_pipeline.discord_notify.notify_discord",
             return_value=True,
-        ):
-            state, _ = consensus.aggregate(sha="abc", gh=gh, pr_number=42)
+        ) as mock_notify:
+            state, _ = consensus.aggregate(
+                sha="abc", gh=gh, pr_number=42, config=self._discord_config(),
+            )
         self.assertEqual(state, "pending")
+        mock_notify.assert_called()
+        # Prüfe event_type des soft-consensus Calls
+        soft_call = next(
+            c for c in mock_notify.call_args_list
+            if c[0][0].event_type == "soft_consensus"
+        )
+        self.assertEqual(soft_call[0][0].pr_number, 42)
+        self.assertAlmostEqual(soft_call[0][0].consensus_score, 6.5)
 
-    def test_soft_consensus_telegram_exception_swallowed(self) -> None:
-        # Wenn send_soft_consensus_alert eine Exception wirft → wird geschluckt
+    def test_soft_consensus_discord_exception_swallowed(self) -> None:
+        # Wenn notify_discord eine Exception wirft → wird geschluckt
         import unittest.mock as mock
 
-        os.environ["TELEGRAM_NOTIFICATION_WEBHOOK"] = "http://fake-webhook.test/alert"
         gh = FakeStatusDetailGh({
             common.STATUS_CODE: ("success", "score: 8/10 (green)"),
             common.STATUS_CODE_CURSOR: ("failure", "score: 5/10 (soft)"),
@@ -665,10 +715,23 @@ class AggregateTelegramAlertTests(unittest.TestCase):
             common.STATUS_DESIGN: ("success", "score: 9/10"),
         })
         with mock.patch(
-            "ai_review_pipeline.telegram_alert.send_soft_consensus_alert",
+            "ai_review_pipeline.discord_notify.notify_discord",
             side_effect=RuntimeError("network down"),
         ):
-            state, _ = consensus.aggregate(sha="abc", gh=gh, pr_number=42)
+            state, _ = consensus.aggregate(
+                sha="abc", gh=gh, pr_number=42, config=self._discord_config(),
+            )
+        self.assertEqual(state, "pending")
+
+    def test_soft_consensus_without_discord_config_no_crash(self) -> None:
+        # Kein config → notify_discord gibt False (kein Discord target), kein Crash
+        gh = FakeStatusDetailGh({
+            common.STATUS_CODE: ("success", "score: 8/10 (green)"),
+            common.STATUS_CODE_CURSOR: ("failure", "score: 5/10 (soft)"),
+            common.STATUS_SECURITY: ("success", "score: 9/10"),
+            common.STATUS_DESIGN: ("success", "score: 9/10"),
+        })
+        state, _ = consensus.aggregate(sha="abc", gh=gh, pr_number=42, config={})
         self.assertEqual(state, "pending")
 
     def test_soft_consensus_nachfrage_exception_swallowed(self) -> None:

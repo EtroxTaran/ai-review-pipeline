@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ai_review_pipeline import common, fix_loop, issue_context, preflight, scoring, telegram_alert
+from ai_review_pipeline import common, discord_notify, fix_loop, issue_context, preflight, scoring
 
 
 # Codex' Default-Review-Prompt emittiert Findings im Format
@@ -276,6 +276,7 @@ def run_stage(
     skip_fix_loop: bool = False,
     max_iterations: int = 2,  # reifung-v2: 4→2 (Circuit-Breaker)
     gh: common.GhClient | None = None,
+    config: dict | None = None,
 ) -> int:
     """Return exit code: 0 green, 1 red-unresolved (escalation), 2 error."""
     gh = gh or common.GhClient()
@@ -495,8 +496,8 @@ def run_stage(
         except Exception as exc:
             print(f"⚠️ Escalation comment failed: {exc}", file=sys.stderr)
 
-        # Wave 4b: Telegram-Alert an Nico. Webhook kommt via env (Secret in
-        # GH Actions). Fehlt die Var → send_escalation_alert returnt False,
+        # Wave 4b (Phase 5 Cutover): Discord-Alert an Nico via ops-n8n Webhook.
+        # Wenn Discord nicht konfiguriert → notify_discord gibt False zurück,
         # Pipeline läuft trotzdem durch — PR-Comment ist primärer Alert-Kanal.
         try:
             last_score = None
@@ -506,20 +507,32 @@ def run_stage(
                 if not sv.parse_failed:
                     last_score = sv.score
             pr_url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{common.REPO}/pull/{pr_number}"
-            alert_ok = telegram_alert.send_escalation_alert(
-                webhook_url=os.environ.get("TELEGRAM_NOTIFICATION_WEBHOOK", ""),
-                pr_number=pr_number,
-                pr_url=pr_url,
-                stage=cfg.name,
-                iterations=outcome.iterations,
-                last_score=last_score,
-                summary=(outcome.summaries[-1] if outcome.summaries else "")[:500],
+            last_summary = (outcome.summaries[-1] if outcome.summaries else "")[:500]
+            alert_ok = discord_notify.notify_discord(
+                discord_notify.DiscordNotifyPayload(
+                    event_type="escalation",
+                    pr_url=pr_url,
+                    repo=common.REPO,
+                    pr_number=pr_number,
+                    consensus_score=float(last_score) if last_score is not None else 0.0,
+                    stage_scores={
+                        "stage": cfg.name,
+                        "iterations": outcome.iterations,
+                        "last_score": last_score,
+                    },
+                    findings=[last_summary] if last_summary else [],
+                    button_actions=[],
+                    channel_id=None,
+                    mention_role="@here",
+                    sticky_message=None,
+                ),
+                config or {},
             )
             if alert_ok:
-                print(f"📨 Telegram-Alert gesendet für {cfg.name}-Escalation auf PR #{pr_number}")
+                print(f"📨 Discord-Alert gesendet für {cfg.name}-Escalation auf PR #{pr_number}")
         except Exception as exc:
             # Alert-Fehler NIEMALS blockieren — wir haben den PR-Comment als Fallback.
-            print(f"⚠️ Telegram-Alert failed: {exc}", file=sys.stderr)
+            print(f"⚠️ Discord-Alert failed: {exc}", file=sys.stderr)
 
         gh.set_commit_status(
             sha=final_sha, context=cfg.status_context, state="failure",

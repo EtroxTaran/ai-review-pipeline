@@ -25,7 +25,7 @@ import re
 import sys
 from typing import Protocol
 
-from ai_review_pipeline import common, nachfrage, telegram_alert
+from ai_review_pipeline import common, discord_notify, nachfrage
 
 
 # Wave 6b: Parse-Pattern für Scores aus status-descriptions.
@@ -63,13 +63,14 @@ def _maybe_alert_disagreement(
     sha: str,
     stage_states: dict[str, str],
     pr_number: int | None = None,
+    config: dict | None = None,
 ) -> None:
     """Wave 5c: Schickt nur wenn Codex+Cursor disagreen (verdict-Mismatch).
 
     Nur informational — der consensus-status (fail-safe=failure bei Disagreement)
     blockt den Merge separat. Dieser Alert informiert Nico, damit er aktiv
-    re-reviewt oder re-triggert. Wenn TELEGRAM_NOTIFICATION_WEBHOOK nicht
-    gesetzt, no-op (kein Crash).
+    re-reviewt oder re-triggert. Wenn Discord nicht konfiguriert (target != discord),
+    no-op (kein Crash) — notify_discord gibt False zurück.
     """
     code = stage_states.get(common.STATUS_CODE)
     cursor = stage_states.get(common.STATUS_CODE_CURSOR)
@@ -78,23 +79,33 @@ def _maybe_alert_disagreement(
     # Disagreement = beide terminal UND inhaltlich unterschiedlich
     if code == cursor or "pending" in (code, cursor) or "skipped" in (code, cursor):
         return
-    webhook = os.environ.get("TELEGRAM_NOTIFICATION_WEBHOOK", "")
-    if not webhook:
-        return
-    # Resolve PR number for the rerun_cmd — wenn nicht übergeben, skip Alert
+    # Resolve PR number für pr_url — wenn nicht übergeben, skip Alert
     if pr_number is None:
         return
     repo = common.REPO
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     try:
-        telegram_alert.send_disagreement_alert(
-            webhook_url=webhook,
-            pr_number=pr_number,
-            pr_url=f"{server}/{repo}/pull/{pr_number}",
-            codex_verdict=code,
-            codex_score=None,  # Scores nicht aus stage_states ablesbar — dafür
-            cursor_verdict=cursor,  # bräuchten wir die full descriptions
-            cursor_score=None,
+        discord_notify.notify_discord(
+            discord_notify.DiscordNotifyPayload(
+                event_type="disagreement",
+                pr_url=f"{server}/{repo}/pull/{pr_number}",
+                repo=repo,
+                pr_number=pr_number,
+                consensus_score=0.0,  # kein aggregierter Score beim reinen Disagreement
+                stage_scores={
+                    "codex_verdict": code,
+                    "cursor_verdict": cursor,
+                },
+                findings=[
+                    f"Codex verdict: {code}",
+                    f"Cursor verdict: {cursor}",
+                ],
+                button_actions=[],
+                channel_id=None,
+                mention_role="@here",
+                sticky_message=None,
+            ),
+            config or {},
         )
     except Exception as exc:
         print(f"⚠️ Disagreement-alert failed: {exc}", file=sys.stderr)
@@ -106,12 +117,13 @@ def aggregate(
     gh: _GhLike | None = None,
     target_url: str | None = None,
     pr_number: int | None = None,
+    config: dict | None = None,
 ) -> tuple[str, str]:
     """Read all stage statuses, compute consensus, and write it back.
 
     Wave 5b: STAGE_STATUS_CONTEXTS enthält jetzt 4 stages (code, code-cursor,
     security, design). Wave 5c: Bei Code-Reviewer-Disagreement wird ein
-    Telegram-Informational-Alert geschickt.
+    Discord-Informational-Alert geschickt (Phase 5 Cutover: kein Telegram mehr).
     """
     gh = gh or common.GhClient()
 
@@ -172,23 +184,38 @@ def aggregate(
         except Exception as exc:
             print(f"⚠️ Nachfrage-Comment failed: {exc}", file=sys.stderr)
 
-        webhook = os.environ.get("TELEGRAM_NOTIFICATION_WEBHOOK", "")
-        if webhook:
-            repo = common.REPO
-            server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-            try:
-                telegram_alert.send_soft_consensus_alert(
-                    webhook_url=webhook,
-                    pr_number=pr_number,
+        repo = common.REPO
+        server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+        avg = (code_score + cursor_score) / 2.0
+        try:
+            discord_notify.notify_discord(
+                discord_notify.DiscordNotifyPayload(
+                    event_type="soft_consensus",
                     pr_url=f"{server}/{repo}/pull/{pr_number}",
-                    codex_score=code_score,
-                    cursor_score=cursor_score,
-                )
-            except Exception as exc:
-                print(f"⚠️ Soft-Consensus-Alert failed: {exc}", file=sys.stderr)
+                    repo=repo,
+                    pr_number=pr_number,
+                    consensus_score=round(avg, 1),
+                    stage_scores={
+                        "codex_score": code_score,
+                        "cursor_score": cursor_score,
+                    },
+                    findings=[
+                        f"Codex score: {code_score}/10",
+                        f"Cursor score: {cursor_score}/10",
+                        f"Avg score: {round(avg, 1)}/10 — human ACK required",
+                    ],
+                    button_actions=[],
+                    channel_id=None,
+                    mention_role="@here",
+                    sticky_message=None,
+                ),
+                config or {},
+            )
+        except Exception as exc:
+            print(f"⚠️ Soft-Consensus-Alert failed: {exc}", file=sys.stderr)
 
-    # Wave 5c: Disagreement-Alert (nur wenn wirklich disagree + Webhook da)
-    _maybe_alert_disagreement(sha=sha, stage_states=stage_states, pr_number=pr_number)
+    # Wave 5c: Disagreement-Alert (nur wenn wirklich disagree + Discord konfiguriert)
+    _maybe_alert_disagreement(sha=sha, stage_states=stage_states, pr_number=pr_number, config=config)
     return state, description
 
 
