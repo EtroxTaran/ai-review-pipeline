@@ -1,0 +1,59 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - python3 -m scripts.ai-review.cursor_review → python -m ai_review_pipeline.stages.cursor_review
+#   - TELEGRAM_NOTIFICATION_WEBHOOK → DISCORD_NOTIFICATION_WEBHOOK
+#   - github.repository bleibt dynamisch
+#   - scripts/ai-review-preflight.sh bleibt — muss im Consumer-Repo mitgeliefert werden
+#   - Kein pull_request_target verwendet (war schon pull_request — konform)
+
+name: AI Code Review (Stage 1b — Cursor)
+
+# Stage 1b: Second opinion via Cursor Agent CLI (composer-2).
+# Läuft PARALLEL zu Stage 1 (Codex) auf pull_request.synchronize — kein
+# workflow_run-chain. Gleiche Architektur-Wahl wie Security+Design:
+# kein Fix-Loop, Findings eskalieren via Consensus + Nico-Review.
+#
+# Schreibt Commit-Status `ai-review/code-cursor`, den der Consensus-Aggregator
+# via `resolve_code_consensus` mit `ai-review/code` (Codex) zu einem virtuellen
+# code-consensus verschmilzt.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ai-cursor-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  checks: write
+
+jobs:
+  cursor-review:
+    if: github.event.pull_request.draft == false
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Preflight — CLI OAuth presence
+        run: bash scripts/ai-review-preflight.sh cursor
+
+      - name: Run Stage 1b — Cursor code review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+        run: |
+          python -m ai_review_pipeline.stages.cursor_review \
+            --pr ${{ github.event.pull_request.number }} \
+            --max-iterations 2 \
+            --skip-fix-loop

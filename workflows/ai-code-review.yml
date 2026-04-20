@@ -1,0 +1,94 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - python3 -m scripts.ai-review.code_review → python -m ai_review_pipeline.stages.code_review
+#   - TELEGRAM_NOTIFICATION_WEBHOOK → DISCORD_NOTIFICATION_WEBHOOK (Discord-only per Rule)
+#   - github.repository bleibt dynamisch (kein hardcoded EtroxTaran/ai-portal)
+#   - scripts/ai-review-preflight.sh bleibt — muss im Consumer-Repo mitgeliefert werden
+#     (TODO: in späterem Phase das Preflight-Skript ins Package einbauen)
+#   - Kein pull_request_target verwendet (war schon pull_request — konform)
+
+name: AI Code Review (Stage 1)
+
+# Stage 1 of 5 im AI-Review-Gate. Codex CLI (gpt-5) prüft funktionale Korrektheit.
+# Läuft auf selbst-gehostetem r2d2-Runner mit OAuth-Credentials aus dem Host-FS
+# (keine API-Keys im Repo). Der Workflow schreibt einen Commit-Status
+# `ai-review/code`, der vom Consensus-Aggregator ausgewertet wird.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  # Gleiche PR = gleiche Gruppe, aber NIE in-progress canceln:
+  # Der Fix-Loop committed+pusht `[ai-fix]`-Commits direkt aus diesem Job;
+  # jeder solcher Push feuert einen weiteren `pull_request.synchronize` und
+  # würde mit `cancel-in-progress: true` den laufenden Job killen, mitten in
+  # der Fix-Loop-Iteration. Nachfolgende Runs queuen sich stattdessen und
+  # werden per `[ai-fix]`-Guard (siehe unten) als No-Op erkannt.
+  group: ai-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write    # Fix-loop committed & pusht auf den PR-Branch
+  pull-requests: write  # Sticky comments + review posts
+  statuses: write    # Commit-status ai-review/code
+  checks: write
+
+jobs:
+  code-review:
+    if: github.event.pull_request.draft == false
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 20
+    steps:
+      # Fix-Loop-eigene Pushes (Commit-Prefix `[ai-fix] code:`) triggern einen
+      # neuen `pull_request.synchronize` — dieser Run würde redundant
+      # re-reviewen, was der noch laufende Parent-Run gerade selbst konvergiert.
+      # Früh ausgegated, damit wir kein CLI-Budget verbrennen.
+      #
+      # WICHTIG: Nur die EIGENEN Fix-Commits skippen. `[ai-fix] security:` oder
+      # `[ai-fix] design:` (von Stage 2/3 gepusht) ändern Applikationscode und
+      # MÜSSEN einen frischen Stage-1-Review auslösen — sonst bliebe der
+      # `ai-review/code`-Status am pre-fix-Commit hängen und der finale PR-Head
+      # könnte Consensus mit einem stale Code-Review-Status passieren.
+      - name: 'Detect own [ai-fix] code: commit (skip redundant re-review)'
+        id: fix_guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MSG=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}" \
+                  --jq '.commit.message' 2>/dev/null || echo "")
+          FIRST_LINE=$(printf '%s\n' "$MSG" | head -n1)
+          case "$FIRST_LINE" in
+            \[ai-fix\]\ code:*)
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "HEAD ist ein [ai-fix] code:-Commit — Review skippen (Parent-Run kuemmert sich)."
+              ;;
+            *)
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "HEAD erfordert frischen Review (erster Run oder [ai-fix] von anderer Stage)."
+              ;;
+          esac
+
+      - name: Checkout PR head
+        if: steps.fix_guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0  # Fix-loop & diffs brauchen History
+
+      - name: Preflight — CLI OAuth presence
+        if: steps.fix_guard.outputs.skip != 'true'
+        run: bash scripts/ai-review-preflight.sh code
+
+      - name: Run Stage 1 — Codex code review
+        if: steps.fix_guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          # Discord-Notification-Webhook (leer = kein Alert, kein Crash)
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+        run: |
+          python -m ai_review_pipeline.stages.code_review \
+            --pr ${{ github.event.pull_request.number }} \
+            --max-iterations 2

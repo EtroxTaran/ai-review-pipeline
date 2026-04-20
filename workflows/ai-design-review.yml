@@ -1,0 +1,61 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - python3 -m scripts.ai-review.design_review → python -m ai_review_pipeline.stages.design_review
+#   - TELEGRAM_NOTIFICATION_WEBHOOK → DISCORD_NOTIFICATION_WEBHOOK
+#   - github.repository bleibt dynamisch
+#   - scripts/ai-review-preflight.sh bleibt — muss im Consumer-Repo mitgeliefert werden
+#   - Kein pull_request_target verwendet (war schon pull_request — konform)
+#   - Modell in Script-Seite: claude-opus-4-7 (Rule 11 — aktuell halten)
+
+name: AI Design Review (Stage 3)
+
+# Stage 3: Claude Opus 4.7, DESIGN.md-Konformität. Skippt sich selbst
+# wenn keine UI-Files im Diff sind (path-filter im Script, nicht hier im YAML,
+# damit consensus.py den "skipped"-State sauber aus der Status-Description
+# parsen kann).
+#
+# Läuft PARALLEL zu Stage 1 + 2, direkt auf pull_request.synchronize.
+# design_review.py ist `review-only` (kein Fix-Loop) — kein Race mit Stage 1
+# Fix-Commits.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ai-design-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+  checks: write
+  actions: read
+
+jobs:
+  design-review:
+    if: github.event.pull_request.draft == false
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Preflight — CLI OAuth presence
+        run: bash scripts/ai-review-preflight.sh design
+
+      - name: Run Stage 3 — Claude Opus design review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+        run: |
+          python -m ai_review_pipeline.stages.design_review \
+            --pr ${{ github.event.pull_request.number }} \
+            --max-iterations 2 \
+            --skip-fix-loop

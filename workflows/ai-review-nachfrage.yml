@@ -1,0 +1,275 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - github.repository bleibt dynamisch (kein hardcoded EtroxTaran/ai-portal)
+#   - Runs-on für handle-job bleibt ubuntu-latest (kein Runner-Zugriff nötig für
+#     issue_comment-Handler — nur gh-CLI-Calls)
+#   - Waiver-Comment: Referenz auf "docs/v2/30-guides/AI-REVIEW-RUNBOOK.md" entfernt
+#     (projekt-spezifisch); durch generischen Hinweis ersetzt
+#   - TELEGRAM_NOTIFICATION_WEBHOOK entfernt (kein Notification-Schritt in diesem
+#     Workflow verwendet es; Discord-Webhook optional über ai-review-auto-fix)
+#   - Kein pull_request_target verwendet — Trigger ist issue_comment (konform)
+#   - Security: Nur PR-Author darf kommandieren (check bleibt erhalten)
+
+name: AI Review — Nachfrage-Response
+
+# Triggert auf PR-Comment mit einem der 3 Kommandos:
+#   - /ai-review approve                    → Consensus-Override auf success
+#   - /ai-review retry                      → alle Stages neu
+#   - /ai-review security-waiver <reason>   → Security-Veto mit Audit-Trail overriden
+#
+# Security-Policy:
+#   - Nur der PR-Author darf kommandieren. Wird explizit geprüft.
+#   - `/ai-review approve` darf KEIN Security-Veto überschreiben. Wenn
+#     ai-review/security=failure, wird der Approve geblockt mit einer
+#     Hinweis-Antwort; PR-Author muss dann bewusst `/ai-review security-waiver`
+#     mit einer ≥30-Zeichen-Begründung posten.
+#   - `/ai-review security-waiver` setzt `ai-review/security-waiver=success`
+#     mit der Reason in der description. consensus_status() liest
+#     diesen Status und lässt die Consensus grün werden trotz security=failure.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  statuses: write
+  actions: write      # workflow_dispatch für retry
+  pull-requests: write  # gh pr comment für guard-replies
+
+jobs:
+  handle:
+    # Nur auf PR-Comments (nicht auf Issue-Comments) mit /ai-review-Kommando
+    if: |
+      github.event.issue.pull_request != null &&
+      (startsWith(github.event.comment.body, '/ai-review approve') ||
+       startsWith(github.event.comment.body, '/ai-review retry') ||
+       startsWith(github.event.comment.body, '/ai-review security-waiver') ||
+       startsWith(github.event.comment.body, '/ai-review ac-waiver'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Resolve PR-Author + head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          meta=$(gh pr view "$PR_NUMBER" --json author,headRefOid --repo ${{ github.repository }})
+          author=$(echo "$meta" | python3 -c "import json,sys; print(json.load(sys.stdin)['author']['login'])")
+          sha=$(echo "$meta" | python3 -c "import json,sys; print(json.load(sys.stdin)['headRefOid'])")
+          echo "author=$author" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"       >> "$GITHUB_OUTPUT"
+
+      - name: Authorization — only PR author may act
+        env:
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
+        run: |
+          if [ "$COMMENT_AUTHOR" != "$PR_AUTHOR" ]; then
+            echo "Comment-Author '$COMMENT_AUTHOR' ist nicht PR-Author '$PR_AUTHOR' — ignoriere."
+            exit 0
+          fi
+          echo "Authorized"
+
+      # Guard — Approve darf Security-Veto nicht überschreiben.
+      - name: Check security-veto state (guard for approve)
+        id: security_check
+        if: startsWith(github.event.comment.body, '/ai-review approve')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD: ${{ steps.pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          statuses=$(gh api "repos/${{ github.repository }}/commits/$PR_HEAD/statuses")
+          sec_state=$(echo "$statuses" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for s in data:
+              if s.get('context') == 'ai-review/security':
+                  print(s.get('state', 'pending'))
+                  sys.exit(0)
+          print('pending')
+          ")
+          waiver_state=$(echo "$statuses" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for s in data:
+              if s.get('context') == 'ai-review/security-waiver':
+                  print(s.get('state', 'pending'))
+                  sys.exit(0)
+          print('pending')
+          ")
+          echo "security=$sec_state"       >> "$GITHUB_OUTPUT"
+          echo "waiver=$waiver_state"      >> "$GITHUB_OUTPUT"
+          echo "security=$sec_state  waiver=$waiver_state"
+
+      - name: Block approve when security=failure without waiver
+        if: |
+          startsWith(github.event.comment.body, '/ai-review approve') &&
+          steps.security_check.outputs.security == 'failure' &&
+          steps.security_check.outputs.waiver != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --body "$(cat <<'EOF'
+          **`/ai-review approve` blockiert — Security-Veto aktiv.**
+
+          `ai-review/security` steht auf `failure`. Ein Blanket-`approve` überschreibt
+          kein Security-Veto (AI-Review-Policy).
+
+          Wenn das Security-Finding ein False-Positive ist, nutze stattdessen:
+
+          ```
+          /ai-review security-waiver <mindestens 30 Zeichen Begruendung>
+          ```
+
+          Die Begründung wird im Commit-Status `ai-review/security-waiver` und im PR
+          als Audit-Trail sichtbar.
+          EOF
+          )"
+          echo "approve blocked — pending security-waiver"
+          exit 0
+
+      - name: Apply approve — override consensus to success
+        if: |
+          startsWith(github.event.comment.body, '/ai-review approve') &&
+          (steps.security_check.outputs.security != 'failure' ||
+           steps.security_check.outputs.waiver == 'success')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD: ${{ steps.pr.outputs.sha }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/$PR_HEAD" \
+            -f state=success \
+            -f context="ai-review/consensus" \
+            -f description="Human-override: /ai-review approve by PR-Author" \
+            -f target_url="$TARGET_URL"
+          echo "ai-review/consensus → success (human-override)"
+
+      # Security-Waiver — validiert reason, setzt Commit-Status.
+      - name: Apply security-waiver — validate reason + set commit status
+        if: startsWith(github.event.comment.body, '/ai-review security-waiver')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD: ${{ steps.pr.outputs.sha }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Reason extrahieren (alles nach `/ai-review security-waiver `)
+          reason=$(python3 <<'PY'
+          import os, re
+          body = os.environ["COMMENT_BODY"]
+          m = re.search(r"^/ai-review\s+security-waiver\s*(.*)$", body, re.IGNORECASE | re.MULTILINE)
+          if not m:
+              print("")
+          else:
+              print((m.group(1) or "").strip())
+          PY
+          )
+          min_len=30
+          if [ "${#reason}" -lt "$min_len" ]; then
+            gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+          **Security-Waiver zurückgewiesen — Begründung zu kurz.**
+
+          Die Begründung muss mindestens **$min_len Zeichen** umfassen. Gib eine
+          ausführliche Erklärung, warum das Security-Finding ein False-Positive ist.
+
+          Beispiel:
+          \`\`\`
+          /ai-review security-waiver False-Positive: Gemini hat Zeile 29 (runs-on) mit actions/checkout verwechselt
+          \`\`\`
+          EOF
+          )"
+            echo "waiver rejected — reason too short (${#reason} < $min_len)"
+            exit 0
+          fi
+
+          # Commit-Status mit reason in description (max 140 chars — GitHub-Limit)
+          short_reason=$(echo "$reason" | cut -c1-140)
+          gh api "repos/${{ github.repository }}/statuses/$PR_HEAD" \
+            -f state=success \
+            -f context="ai-review/security-waiver" \
+            -f description="Waiver by PR-Author: $short_reason" \
+            -f target_url="$TARGET_URL"
+          echo "ai-review/security-waiver → success (reason: $short_reason)"
+
+          # Sticky-Audit-Comment — überschreibt vorherigen Waiver-Comment falls existent
+          tmpfile=$(mktemp)
+          cat > "$tmpfile" <<EOF
+          <!-- ai-review-security-waiver -->
+          ## Security-Waiver gesetzt
+
+          **PR-Author:** @${{ steps.pr.outputs.author }}
+          **Commit:** \`$PR_HEAD\`
+          **Begründung (Audit-Trail):**
+
+          > $reason
+
+          Das Security-Finding wurde bewusst als False-Positive markiert. Der
+          ursprüngliche Security-Report (\`ai-review/security\`) bleibt unverändert.
+          Nur der Consensus-Check (\`ai-review/consensus\`) darf jetzt grün werden,
+          wenn Code + Design + AC-Validation OK sind.
+
+          _Audit-Query: \`gh api repos/${{ github.repository }}/statuses/$PR_HEAD | jq '.[] | select(.context == "ai-review/security-waiver")'\`_
+          EOF
+          # Existierenden Waiver-Comment finden + updaten, sonst neu posten
+          existing=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("ai-review-security-waiver")) | .id' | head -n1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" \
+              -f body="$(cat "$tmpfile")" >/dev/null
+            echo "waiver-comment updated (id=$existing)"
+          else
+            gh pr comment "$PR_NUMBER" --body "$(cat "$tmpfile")"
+            echo "waiver-comment posted"
+          fi
+          rm -f "$tmpfile"
+
+      - name: Apply retry — dispatch auto-fix AND re-dispatch stage workflows
+        if: startsWith(github.event.comment.body, '/ai-review retry')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_HEAD: ${{ steps.pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          echo "/ai-review retry — PR #$PR_NUMBER"
+          # retry delegiert an ai-review-auto-fix.yml. WICHTIG: Wenn
+          # auto_fix 0 Diffs produziert, gibt es kein pull_request.synchronize
+          # und die Stages würden NICHT neu laufen.
+          # Deshalb: zusätzlich explizit den Consensus-Status auf pending
+          # zurücksetzen. Dieser Re-Review-Pfad steht unabhängig vom
+          # Auto-Fix-Ergebnis.
+          dispatched=1
+          if gh workflow run ai-review-auto-fix.yml \
+               --field pr_number="$PR_NUMBER" \
+               --field reason="manual-retry" \
+               --field context_hint="PR-Author hat /ai-review retry gepostet" 2>/dev/null; then
+            dispatched=0
+            echo "auto-fix workflow dispatched"
+          else
+            echo "auto-fix workflow_dispatch failed (not deployed yet?)"
+          fi
+
+          # Consensus + Code-Stage-Status auf pending zurücksetzen
+          TARGET_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh api "repos/${{ github.repository }}/statuses/$PR_HEAD" \
+            -f state=pending \
+            -f context="ai-review/consensus" \
+            -f description="Retry requested — waiting for stages to re-run" \
+            -f target_url="$TARGET_URL" || true
+
+          if [ "$dispatched" -eq 0 ]; then
+            gh pr comment "$PR_NUMBER" --body \
+              "**Retry requested** — \`ai-review-auto-fix.yml\` dispatched. Wenn Claude einen Fix-Commit schreibt, feuert \`pull_request.synchronize\` und alle Stages laufen neu. Bei Zero-Diff: bitte push einen leeren Commit (\`git commit --allow-empty -m 'retrigger'\`) zum manuellen Re-Trigger."
+          else
+            gh pr comment "$PR_NUMBER" --body \
+              "**Retry requested by PR-Author** — push a new commit or close+reopen this PR to re-trigger stages. (\`ai-review-auto-fix.yml\` dispatch failed — check runner registration)"
+          fi

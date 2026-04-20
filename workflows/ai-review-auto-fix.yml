@@ -1,0 +1,165 @@
+# NOTE: parametrized from ai-portal@2026-04-20
+# Changes:
+#   - python3 -m scripts.ai-review.auto_fix → python -m ai_review_pipeline.stages.auto_fix
+#   - TELEGRAM_NOTIFICATION_WEBHOOK → DISCORD_NOTIFICATION_WEBHOOK
+#   - github.repository bleibt dynamisch
+#   - scripts/ai-review-preflight.sh bleibt — muss im Consumer-Repo mitgeliefert werden
+#   - Post-fix test-Kommando (`pnpm typecheck + test --changed`) ist projekt-spezifisch:
+#     Consumer muss AI_REVIEW_POSTFIX_CHECK env-Var oder Script-Override setzen
+#     (Default im Python-Script: `true` / no-op bis Consumer konfiguriert)
+#   - Kein pull_request_target verwendet — Trigger ist workflow_dispatch (konform)
+
+name: AI Review — Auto-Fix
+
+# Cross-stage Auto-Fix-Agent — getriggert via workflow_dispatch.
+# Aufrufer:
+#   • Discord-Button "Auto-Fix" (n8n-callback-Workflow)
+#   • /ai-review retry PR-Comment (delegiert via ai-review-nachfrage.yml)
+#   • Manuell: gh workflow run ai-review-auto-fix.yml --field pr_number=42 ...
+#
+# Identity: github-actions[bot] mit default GITHUB_TOKEN.
+# KEIN separater Bot-Account nötig — Claude/Codex/Gemini/Cursor OAuth liegt
+# lokal auf dem self-hosted r2d2-Runner in ~/.claude, ~/.codex, etc.
+#
+# Ablauf:
+#   1. Checkout PR head (fetch-depth=0 für diff-range)
+#   2. Preflight: claude CLI OAuth present
+#   3. ai_review_pipeline.stages.auto_fix führt 1-Pass-Fix aus (kein fix_loop,
+#      das wäre doppelt nach dem Re-Review-Cascade)
+#   4. Auto_fix pushed direkt; pull_request.synchronize feuert alle Stages neu
+#
+# Guard-Rails (im Python enforced):
+#   - max 10 Files changed (AUTO_FIX_MAX_FILES env override)
+#   - nur Files aus den Review-Findings-Sticky-Comments dürfen geändert werden
+#   - post-fix check (projekt-konfigurierbar via AI_REVIEW_POSTFIX_CHECK) muss grün sein
+#   - bei Fail: rollback via git reset --hard, kein push
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR Number to auto-fix'
+        required: true
+        type: string
+      reason:
+        description: 'Trigger-Quelle (discord-button / manual-retry / direct / ...)'
+        required: true
+        default: 'direct'
+        type: string
+      context_hint:
+        description: "Optional hint fuer den Fix-Agent (z. B. 'Cursor: N+1 in routes/x.ts:42')"
+        required: false
+        default: ''
+        type: string
+      max_files:
+        description: 'Max changed files guard-rail (default 10)'
+        required: false
+        default: '10'
+        type: string
+
+permissions:
+  contents: write      # Auto-fix pusht direkt auf PR-Branch
+  pull-requests: write  # Sticky comments (falls auto_fix eskaliert)
+  statuses: write      # zum Dokumentieren des Ergebnisses
+  actions: read
+
+jobs:
+  auto-fix:
+    runs-on: [self-hosted, r2d2, ai-review]
+    timeout-minutes: 20
+    steps:
+      - name: Resolve PR head SHA + branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          meta=$(gh pr view "$PR_NUMBER" \
+                  --json headRefOid,headRefName,baseRefName \
+                  --repo ${{ github.repository }})
+          sha=$(echo "$meta" | python3 -c "import json,sys; print(json.load(sys.stdin)['headRefOid'])")
+          branch=$(echo "$meta" | python3 -c "import json,sys; print(json.load(sys.stdin)['headRefName'])")
+          base=$(echo "$meta" | python3 -c "import json,sys; print(json.load(sys.stdin)['baseRefName'])")
+          echo "sha=$sha"       >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "base=$base"     >> "$GITHUB_OUTPUT"
+          echo "PR #$PR_NUMBER: branch=$branch base=$base sha=$sha"
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          fetch-depth: 0  # History für diff-range
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ai-review-pipeline
+        run: pip install ai-review-pipeline
+
+      - name: Git identity (github-actions[bot])
+        # Auto-Fix-Commits sollen klar als Bot-commits erkennbar sein,
+        # damit sie im git log von menschlichen Commits trennbar sind.
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Preflight — claude CLI OAuth presence
+        run: bash scripts/ai-review-preflight.sh design
+
+      - name: Run Auto-Fix (single-pass)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          AUTO_FIX_MAX_FILES: ${{ inputs.max_files }}
+          DISCORD_NOTIFICATION_WEBHOOK: ${{ secrets.DISCORD_NOTIFICATION_WEBHOOK }}
+          # Consumer-Repo kann dieses Script überschreiben um projekt-spezifische
+          # Post-Fix-Checks durchzuführen (z. B. pnpm typecheck && pnpm test --changed)
+          AI_REVIEW_POSTFIX_CHECK: ${{ vars.AI_REVIEW_POSTFIX_CHECK || '' }}
+        run: |
+          python -m ai_review_pipeline.stages.auto_fix \
+            --pr "${{ inputs.pr_number }}" \
+            --reason "${{ inputs.reason }}" \
+            --context-hint "${{ inputs.context_hint }}" \
+            --max-files "${{ inputs.max_files }}" \
+            --worktree "$GITHUB_WORKSPACE"
+
+      - name: Report outcome on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" = "success" ]; then
+            body=$(cat <<EOF
+          **Auto-Fix completed** — [run]($RUN_URL)
+
+          Trigger: \`${{ inputs.reason }}\`
+          Context: \`${{ inputs.context_hint }}\`
+
+          Falls ein Commit geschrieben wurde, hat er bereits den konfigurierten
+          Post-Fix-Check bestanden; die Stages re-runnen jetzt automatisch
+          via \`pull_request.synchronize\`.
+          EOF
+          )
+          else
+            body=$(cat <<EOF
+          **Auto-Fix failed** — [run]($RUN_URL)
+
+          Trigger: \`${{ inputs.reason }}\`
+          Outcome: \`$OUTCOME\`
+
+          Moeglicherweise Guard-Rail-Violation (zu viele Files, unrelated paths)
+          oder post-fix Check rot. Worktree wurde zurueckgerollt —
+          kein Commit pushed. Bitte Log in den [Run-Details]($RUN_URL) pruefen.
+          EOF
+          )
+          fi
+          gh pr comment "$PR_NUMBER" --body "$body"
