@@ -348,6 +348,24 @@ class LoadPromptTests(unittest.TestCase):
             stage.PROMPTS_DIR = original_dir
 
 
+    def test_all_stage_prompt_files_exist(self) -> None:
+        """Alle Stage-Prompts müssen als echte Dateien im Paket vorhanden sein."""
+        from ai_review_pipeline.stages import stage as stage_mod
+        required = [
+            "code_review.md",
+            "cursor_review.md",
+            "security_review.md",
+            "design_review.md",
+        ]
+        for filename in required:
+            path = stage_mod.PROMPTS_DIR / filename
+            self.assertTrue(
+                path.exists(),
+                f"Prompt-Datei fehlt: {path}\n"
+                "Bitte src/ai_review_pipeline/stages/prompts/{filename} anlegen.",
+            )
+
+
 # ---------------------------------------------------------------------------
 # Helper: Fake GhClient für run_stage Tests
 # ---------------------------------------------------------------------------
