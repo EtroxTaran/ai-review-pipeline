@@ -1,4 +1,15 @@
-"""Telegram-Escalation-Alert (Wave 4b).
+"""Telegram-Escalation-Alert (DEPRECATED — wird in Phase 5 entfernt).
+
+⚠️  Deprecation-Notice (Plan §319, §371-372, §394-396):
+Dieses Modul bleibt nur als Legacy-Shim während Phase 3 (Extraktion) und
+Phase 4 (Shadow-Mode), damit consensus.py bei der Extraktion nicht gleichzeitig
+refactort werden muss. In Phase 5 (Cutover) wird:
+
+    1. consensus.py auf `discord_notify.notify_discord()` umgestellt
+    2. telegram_alert.py aus src/ai_review_pipeline/ entfernt
+    3. Zugehörige Tests aus tests/test_consensus.py angepasst
+
+Neue Code-Pfade MÜSSEN stattdessen `discord_notify.py` verwenden.
 
 Portiert aus ai-portal/scripts/ai-review/telegram_alert.py.
 
