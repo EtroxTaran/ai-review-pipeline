@@ -909,6 +909,65 @@ class StatusContextScopedAggregateTests(unittest.TestCase):
         self.assertNotIn(common.STATUS_CONSENSUS, contexts_written)
 
 
+class WaiverFetchRegressionTests(unittest.TestCase):
+    """Regression: consensus.aggregate() MUSS den security-waiver-Status
+    aus den Commit-Statuses lesen, sonst greift der Security-Veto auch bei
+    valider Waiver-Begründung.
+
+    Bug: STAGE_STATUS_CONTEXTS enthielt STATUS_SECURITY_WAIVER nicht, sodass
+    consensus.py den Waiver-Status nie gefetched hat (siehe ai-portal PR#44
+    Phase-5-Cutover: Waiver wurde via /ai-review security-waiver gesetzt,
+    aber Security-Veto blockierte trotzdem den Merge).
+    """
+
+    def test_aggregate_fetches_security_waiver_context(self) -> None:
+        # Arrange: security=failure, waiver=success — Veto muss übersteuert werden
+        class FakeWaiverGh:
+            def __init__(self) -> None:
+                self.written: list[dict] = []
+                self.fetched_contexts: list[str] = []
+
+            def get_commit_statuses(self, sha: str) -> dict[str, str]:
+                return {
+                    common.STATUS_CODE: "success",
+                    common.STATUS_CODE_CURSOR: "success",
+                    common.STATUS_SECURITY: "failure",
+                    common.STATUS_SECURITY_WAIVER: "success",
+                    common.STATUS_DESIGN: "success",
+                }
+
+            def set_commit_status(
+                self, *, sha: str, context: str, state: str,
+                description: str, target_url: str | None = None,
+            ) -> None:
+                self.written.append({
+                    "sha": sha, "context": context,
+                    "state": state, "description": description,
+                })
+
+        gh = FakeWaiverGh()
+
+        # Act
+        state, desc = consensus.aggregate(sha="abc", gh=gh)
+
+        # Assert: Konsens ist success, NICHT Security-Veto.
+        # Wenn der Waiver-Context nicht gefetched wird, kippt das zurück
+        # auf "Security-Veto: ai-review/security = failure".
+        self.assertEqual(state, "success", f"Expected success, got {state}: {desc}")
+        self.assertNotIn("Security-Veto", desc)
+
+    def test_stage_status_contexts_includes_waiver(self) -> None:
+        # Strukturelle Absicherung: wenn jemand den Waiver-Context aus der
+        # Liste entfernt, schlägt dieser Test an, bevor der obige Integrations-
+        # Test rot wird.
+        self.assertIn(
+            common.STATUS_SECURITY_WAIVER,
+            common.STAGE_STATUS_CONTEXTS,
+            "STATUS_SECURITY_WAIVER muss in STAGE_STATUS_CONTEXTS sein, "
+            "damit consensus.py den Waiver-Status aus GitHub fetched.",
+        )
+
+
 class StatusContextMainArgsTests(unittest.TestCase):
     """Scenario 2 (Red): consensus.main() akzeptiert --status-context und
     --status-context-prefix Argumente und propagiert sie an aggregate()."""

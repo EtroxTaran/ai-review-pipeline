@@ -59,6 +59,11 @@ STATUS_SECURITY_WAIVER = "ai-review/security-waiver"
 
 STAGE_STATUS_CONTEXTS = (
     STATUS_CODE, STATUS_CODE_CURSOR, STATUS_SECURITY, STATUS_DESIGN,
+    # STATUS_SECURITY_WAIVER muss hier drin sein, sonst fetched `consensus.py`
+    # den Waiver-Status nie → `security_waiver_state` bleibt "pending" →
+    # Security-Veto greift auch bei valider Waiver-Begründung.
+    # Regression-Test: tests/test_consensus.py::test_security_waiver_overrides_veto
+    STATUS_SECURITY_WAIVER,
 )
 
 # GitHub commit-status allowed states (API contract)
