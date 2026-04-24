@@ -14,6 +14,7 @@ DI-Fakes injiziert — kein echter CLI-Aufruf, kein Netz.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -194,8 +195,13 @@ class TestDesignReviewConfig:
 # ---------------------------------------------------------------------------
 
 class TestClaudeReviewer:
-    def test_invokes_run_claude_with_opus_model(self) -> None:
-        """_claude_reviewer muss common.run_claude mit model='claude-opus-4-7' aufrufen."""
+    def test_invokes_run_claude_with_opus_model_from_registry(self) -> None:
+        """_claude_reviewer ruft common.run_claude mit Opus-Model aus Registry.
+
+        Regression-Hook: Der Modell-Name ist NICHT mehr hardcoded in design_review.py;
+        er kommt aus resolve_model('design') → CLAUDE_OPUS aus registry/MODEL_REGISTRY.env.
+        Dieser Test pinnt env-var, um test-environment-Drift zu vermeiden.
+        """
         # Arrange
         captured_kwargs: list[dict] = []
 
@@ -205,17 +211,18 @@ class TestClaudeReviewer:
 
         worktree = Path("/tmp/fake-worktree")
 
-        # Act — Patch common.run_claude direkt (DI auf Funktions-Ebene)
-        with patch("ai_review_pipeline.stages.design_review.common.run_claude", new=fake_run_claude):
-            result = _claude_reviewer(
-                prompt="Check this UI code",
-                worktree=worktree,
-                base_branch="main",
-            )
+        # Act — Env-Override pinnt das erwartete Modell determiniert
+        with patch.dict(os.environ, {"AI_REVIEW_MODEL_DESIGN": "claude-opus-test-pin"}):
+            with patch("ai_review_pipeline.stages.design_review.common.run_claude", new=fake_run_claude):
+                _claude_reviewer(
+                    prompt="Check this UI code",
+                    worktree=worktree,
+                    base_branch="main",
+                )
 
-        # Assert — run_claude muss mit model=claude-opus-4-7 aufgerufen werden
+        # Assert — Env-Override greift, Model kommt genau daher
         assert len(captured_kwargs) == 1
-        assert captured_kwargs[0]["model"] == "claude-opus-4-7"
+        assert captured_kwargs[0]["model"] == "claude-opus-test-pin"
         assert captured_kwargs[0]["prompt"] == "Check this UI code"
 
     def test_returns_reviewer_output_string(self) -> None:

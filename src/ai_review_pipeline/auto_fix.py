@@ -268,10 +268,16 @@ def run_auto_fix(
     gh: _GhLike,
     runner: common.Runner = common.default_runner,
     worktree: Path,
-    model: str = "claude-opus-4-7",
+    model: str | None = None,
     max_files: int = AUTO_FIX_MAX_FILES,
     skip_push: bool = False,
 ) -> AutoFixResult:
+    """Policy: auto_fix nutzt Sonnet (Volume-Traffic). resolve_model liefert
+    den aktuellen Claude-Sonnet aus der Registry. Expliziter `model`-Param
+    überschreibt (für Tests / Experimente)."""
+    if model is None:
+        from ai_review_pipeline import models
+        model = models.resolve_model("auto_fix")
     """Führt einen einmaligen Auto-Fix-Pass aus.
 
     Kernablauf:
@@ -480,7 +486,11 @@ def main(argv: list[str] | None = None) -> int:
                          "(z. B. 'Cursor finding: N+1 in routes/x.ts:42')")
     ap.add_argument("--max-files", type=int, default=AUTO_FIX_MAX_FILES,
                     help=f"Guard-Rail: max changed files (default {AUTO_FIX_MAX_FILES})")
-    ap.add_argument("--model", default="claude-opus-4-7")
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Claude-Modell. Default: resolve_model('auto_fix') → Sonnet.",
+    )
     ap.add_argument("--dry-run", action="store_true",
                     help="Nimm keinen push vor — nur Fix + validate (für local-test)")
     ap.add_argument("--worktree", type=Path, default=Path.cwd(),

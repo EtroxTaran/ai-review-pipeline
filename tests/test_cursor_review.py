@@ -109,8 +109,10 @@ class TestCursorReviewConfig:
 class TestCursorReviewerFn:
     """Tests für die _cursor_reviewer-Wrapper-Funktion."""
 
-    def test_calls_common_run_cursor_with_composer_2(self) -> None:
-        # Arrange
+    def test_calls_common_run_cursor_with_cli_default(self) -> None:
+        # Policy: Cursor-Reviewer nutzt CLI-Default → model=None, kein
+        # --model-Flag wird an cursor-agent weitergereicht. Registry pinnt
+        # stattdessen die CLI-Binary-Version.
         from ai_review_pipeline.stages import cursor_review
 
         worktree = Path("/tmp/fake-worktree")
@@ -121,7 +123,7 @@ class TestCursorReviewerFn:
             prompt: str,
             worktree: Path,
             base_branch: str,
-            model: str = "composer-2",
+            model: str | None = None,
             **_kw: Any,
         ) -> str:
             captured["model"] = model
@@ -137,8 +139,27 @@ class TestCursorReviewerFn:
 
         # Assert
         assert result == "LGTM"
-        assert captured["model"] == "composer-2"
+        assert captured["model"] is None, "Cursor-Reviewer darf kein --model-Flag setzen (CLI-Default-Policy)"
         assert captured["base_branch"] == "main"
+
+    def test_env_override_can_force_explicit_model(self) -> None:
+        # Wenn Dev ein Modell erzwingen will (z.B. Composer-3-Testing),
+        # funktioniert AI_REVIEW_MODEL_CODE_CURSOR=... — der Reviewer liefert
+        # dann expliziten Model-String an run_cursor, der das --model-Flag setzt.
+        import os
+        from ai_review_pipeline.stages import cursor_review
+
+        captured: dict[str, Any] = {}
+
+        def fake_run_cursor(*, model: str | None = None, **_kw: Any) -> str:
+            captured["model"] = model
+            return "LGTM"
+
+        with patch.dict(os.environ, {"AI_REVIEW_MODEL_CODE_CURSOR": "composer-test"}):
+            with patch.object(common, "run_cursor", side_effect=fake_run_cursor):
+                cursor_review._cursor_reviewer("x", Path("/tmp"), "main")
+
+        assert captured["model"] == "composer-test"
 
     def test_cursor_reviewer_forwards_prompt(self) -> None:
         # Arrange

@@ -59,13 +59,16 @@ from ai_review_pipeline.stages import stage  # Wave 4b: stage.py ist portiert
 # ---------------------------------------------------------------------------
 
 def _cursor_reviewer(prompt: str, worktree: Path, base_branch: str) -> str:
-    # composer-2 ist Cursors eigenes Modell — gibt maximale Vendor-Diversität
-    # gegenüber Codex (GPT-5). Für reines Code-Review genügt die Standard-Variante.
+    # Policy: CLI-Default vertrauen (resolve_model() gibt None) → kein
+    # --model-Flag → cursor-agent wählt selbst. Registry pinnt stattdessen
+    # die CLI-Binary-Version. Env-Override via AI_REVIEW_MODEL_CODE_CURSOR
+    # erlaubt manuelles Testing einer spezifischen Composer-Version.
+    from ai_review_pipeline import models
     return common.run_cursor(
         prompt=prompt,
         worktree=worktree,
         base_branch=base_branch,
-        model="composer-2",
+        model=models.resolve_model("code-cursor"),
     )
 
 

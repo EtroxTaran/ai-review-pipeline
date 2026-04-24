@@ -154,11 +154,13 @@ def _gemini_reviewer(
         + "\n\n---\n\n"
         + prompt
     )
+    from ai_review_pipeline import models
     return common.run_gemini(
         prompt=full_prompt,
         worktree=worktree,
         base_branch=base_branch,
         runner=runner,
+        model=models.resolve_model("security"),
     )
 
 

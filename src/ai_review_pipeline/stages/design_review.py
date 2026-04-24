@@ -59,13 +59,15 @@ def _has_ui_changes(changed_files: list[str]) -> bool:
 def _claude_reviewer(prompt: str, worktree: Path, base_branch: str) -> str:
     """Ruft common.run_claude mit Design-spezifischem Modell auf.
 
-    Modell: claude-opus-4-7 (höchste Qualität für Design-Urteil).
+    Modell kommt aus registry/MODEL_REGISTRY.env via resolve_model("design").
+    Policy: Opus für Design (hohe Stakes, 1 Call/PR — kein Volume-Concern).
     """
+    from ai_review_pipeline import models
     return common.run_claude(
         prompt=prompt,
         worktree=worktree,
         base_branch=base_branch,
-        model="claude-opus-4-7",
+        model=models.resolve_model("design"),
     )
 
 

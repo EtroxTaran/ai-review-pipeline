@@ -552,10 +552,19 @@ def run_gemini(
     worktree: Path,
     base_branch: str,
     runner: Runner = default_runner,
-    model: str = "gemini-2.5-pro",
+    model: str | None = None,
     timeout: int = CLI_REVIEW_TIMEOUT,
 ) -> str:
-    """Invoke Gemini CLI. -m MUST come before -p (yargs ordering bug)."""
+    """Invoke Gemini CLI. -m MUST come before -p (yargs ordering bug).
+
+    Model-Policy: Stages rufen IMMER explicit mit `model=models.resolve_model(...)`.
+    Wenn model=None (historisch oder Test-Pfad), wird ein Fallback-Default
+    verwendet — aber das ist Schriftsatz-Tech-Debt, kein erlaubter Happy-Path.
+    """
+    if model is None:
+        # Letzter-Stand-Fallback, damit bestehende Tests + Notfall-Aufrufe
+        # nicht crashen. Neue Callers MÜSSEN resolve_model() nutzen.
+        model = "gemini-3.1-pro-preview"
     try:
         proc = runner(
             ["gemini", "-m", model, "-p", prompt],
@@ -574,10 +583,16 @@ def run_claude(
     worktree: Path,
     base_branch: str,
     runner: Runner = default_runner,
-    model: str = "claude-opus-4-7",
+    model: str | None = None,
     timeout: int = CLI_REVIEW_TIMEOUT,
 ) -> str:
-    """Invoke Claude Code CLI in print-mode (-p)."""
+    """Invoke Claude Code CLI in print-mode (-p).
+
+    Model-Policy: Stages/Auto-Fix rufen explicit mit resolve_model().
+    None-Path existiert nur als Fallback-Safety für Legacy-Tests.
+    """
+    if model is None:
+        model = "claude-opus-4-7"  # Legacy-Fallback; resolve_model() ist SoT
     try:
         proc = runner(
             ["claude", "--model", model, "-p", prompt],
@@ -625,7 +640,7 @@ def run_cursor(
     worktree: Path,
     base_branch: str,
     runner: Runner = default_runner,
-    model: str = "composer-2",
+    model: str | None = None,
     timeout: int = CLI_REVIEW_TIMEOUT,
 ) -> str:
     """Invoke Cursor Agent CLI (zweiter Code-Reviewer, Wave 5a).
@@ -635,20 +650,22 @@ def run_cursor(
     Workspace-Trust-Prompt (wir laufen auf einem trusted self-hosted Runner).
     `--output-format json` damit wir `result` deterministisch extrahieren.
 
-    Model-Default: `composer-2` — Cursor's eigenes Modell, maximale Vendor-
-    Diversität gegenüber Codex (GPT-5). Fallback-Optionen: `auto`,
-    `claude-4.6-sonnet-medium`, `gpt-5.3-codex`.
+    Model-Policy (User-Entscheidung 2026-04-24):
+    - `model=None` (default) → kein `--model`-Flag → cursor-agent nutzt
+      eigenen Default. Registry pinnt stattdessen die CLI-Version
+      (`CURSOR_AGENT_CLI_VERSION`). Damit ist Reproducibility gegeben ohne
+      dass wir einen Modell-String pflegen müssen, der bei composer-3-
+      Release obsolet wird.
+    - `model="composer-2"` o.ä. → explicit-Flag-Pfad (z.B. für Env-Override
+      `AI_REVIEW_MODEL_CODE_CURSOR=composer-experimental`).
     """
+    cmd = ["cursor-agent", "--print", "--force", "--output-format", "json"]
+    if model is not None:
+        cmd.extend(["--model", model])
+    cmd.append(prompt)
     try:
         proc = runner(
-            [
-                "cursor-agent",
-                "--print",
-                "--force",
-                "--output-format", "json",
-                "--model", model,
-                prompt,
-            ],
+            cmd,
             cwd=worktree,
             timeout=timeout,
             env={**os.environ, "NO_COLOR": "1"},
