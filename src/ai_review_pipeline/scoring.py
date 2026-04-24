@@ -105,20 +105,120 @@ def _fail_closed(reason: str) -> ScoredVerdict:
     )
 
 
+# ---------------------------------------------------------------------------
+# Robustness: LLM-Quirks-Recovery
+# ---------------------------------------------------------------------------
+
+# Regex zum Entfernen von `// ... \n` line comments außerhalb von Strings.
+# Konservativ: matcht `//` nur wenn nicht direkt nach einem String-Ende (d.h.
+# wir ignorieren die Möglichkeit, dass `//` in einem String-Value steckt —
+# das ist fail-safe: im schlimmsten Fall bleibt ein valider String unverändert,
+# weil kein Match triggert, oder ein String-Content mit `//` wird verstümmelt,
+# was dann auf den nächsten Recovery-Pass fällt oder fail-closed endet).
+_LINE_COMMENT_RE = re.compile(r"(?<!:)//[^\n]*")
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+# Python-Literale an Wort-Grenzen. `\b` matcht nur True/False/None, nicht
+# substrings wie "TrueStory".
+_PY_TRUE_RE = re.compile(r"\bTrue\b")
+_PY_FALSE_RE = re.compile(r"\bFalse\b")
+_PY_NONE_RE = re.compile(r"\bNone\b")
+
+
+def _strip_comments(block: str) -> str:
+    """Entfernt `//` line + `/* */` block comments (häufig bei Cursor/Grok)."""
+    block = _BLOCK_COMMENT_RE.sub("", block)
+    block = _LINE_COMMENT_RE.sub("", block)
+    return block
+
+
+def _strip_trailing_commas(block: str) -> str:
+    """`,}` → `}` und `,]` → `]` (JS-Style, Python dict-Style)."""
+    return _TRAILING_COMMA_RE.sub(r"\1", block)
+
+
+def _normalize_python_literals(block: str) -> str:
+    """Python-Literale → JSON-Literale."""
+    block = _PY_TRUE_RE.sub("true", block)
+    block = _PY_FALSE_RE.sub("false", block)
+    block = _PY_NONE_RE.sub("null", block)
+    return block
+
+
+def _swap_single_to_double_quotes(block: str) -> str:
+    """Tauscht Single-Quotes gegen Double-Quotes — nur wenn der Block KEINE
+    Double-Quotes enthält (sicheres Gesamtsignal: es ist Python-dict-Style).
+
+    Wenn der Block bereits gemischte Quotes hat, lassen wir es — ein
+    einfacher Global-Replace würde escaped Apostrophes zerstören.
+    """
+    if '"' in block:
+        return block
+    if "'" not in block:
+        return block
+    return block.replace("'", '"')
+
+
+_RECOVERY_PASSES: tuple[tuple[str, "callable"], ...] = (  # type: ignore[name-defined]
+    ("strip_comments", _strip_comments),
+    ("strip_trailing_commas", _strip_trailing_commas),
+    ("normalize_python_literals", _normalize_python_literals),
+    ("single_to_double_quotes", _swap_single_to_double_quotes),
+)
+
+
+def _try_recover_json(block: str) -> tuple[dict | None, list[str]]:
+    """Versucht den JSON-Block via bekannter LLM-Quirks-Normalisierungen zu
+    reparieren. Gibt `(data, applied_passes)` zurück; `data` ist None wenn
+    alle Passes gescheitert sind.
+
+    Reihenfolge der Passes wichtig: Comments zuerst (damit Single-Quote-Swap
+    keine Kommentar-Zeichen betrifft), dann trailing commas, dann Python-
+    Literale, dann Single-Quote-Swap.
+    """
+    current = block
+    applied: list[str] = []
+    for name, fn in _RECOVERY_PASSES:
+        new = fn(current)
+        if new != current:
+            applied.append(name)
+            current = new
+        try:
+            data = json.loads(current)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data, applied
+        # Non-dict (z.B. Array): weiter iterieren — vielleicht bringt der
+        # nächste Pass doch noch Struktur.
+    return None, applied
+
+
 def parse_scored_verdict(raw: str) -> ScoredVerdict:
     """Parst den strukturierten Review-Output eines LLM-Reviewers.
 
     Strenge Validation — jeder Pfad, der nicht sauber als ScoredVerdict
     interpretierbar ist, wird als `verdict="hard"` zurückgegeben.
+
+    Robustheit: Wenn strict `json.loads` fehlschlägt, versucht eine Kaskade
+    bekannter LLM-Quirks-Recoveries (Single-Quotes, trailing commas, Python-
+    Literale, Inline-Kommentare). Bei erfolgreicher Recovery wird das im
+    summary vermerkt ("[recovered: …] …") — Audit-Trail für schlampige
+    Reviewer, aber kein Merge-Blocker.
     """
     block = _extract_json(raw)
     if block is None:
         return _fail_closed("no JSON block found in reviewer output")
 
+    recovery_note: str | None = None
     try:
         data = json.loads(block)
     except json.JSONDecodeError as exc:
-        return _fail_closed(f"malformed JSON: {exc.msg}")
+        recovered, applied = _try_recover_json(block)
+        if recovered is None:
+            return _fail_closed(f"malformed JSON: {exc.msg}")
+        data = recovered
+        recovery_note = ",".join(applied) if applied else "unknown"
 
     if not isinstance(data, dict):
         return _fail_closed("JSON root must be an object")
@@ -165,6 +265,9 @@ def parse_scored_verdict(raw: str) -> ScoredVerdict:
         if not isinstance(line, int) or isinstance(line, bool):
             return _fail_closed(f"finding[{idx}].line must be an int")
         findings.append(Finding(severity=severity, file=file_, line=line, msg=msg))  # type: ignore[arg-type]
+
+    if recovery_note is not None:
+        summary = f"[recovered: {recovery_note}] {summary}"
 
     return ScoredVerdict(
         score=score,

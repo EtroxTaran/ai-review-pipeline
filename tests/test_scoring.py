@@ -120,6 +120,102 @@ Nothing else to add.
         self.assertTrue(verdict.parse_failed)
 
 
+class MalformedJsonRecoveryTests(unittest.TestCase):
+    """Regression: LLM-Reviewer (insbesondere Cursor composer-2) liefern
+    gelegentlich JSON mit typischen Quirks — Single-Quotes, trailing commas,
+    Python-Booleans, Inline-Kommentare. Der Parser muss robust genug sein,
+    diese häufigen Fälle zu erholen, statt fail-closed zu gehen.
+
+    Entdeckt beim ai-portal Phase-5-Cutover (PR#44): cursor-review lieferte
+    Output mit 'Expecting property name enclosed in double quotes', was das
+    cursor-review-Gate hart failte, obwohl der Reviewer inhaltlich ein
+    normales Verdict abliefern wollte.
+
+    Fail-Closed-Kontrakt bleibt bestehen: wenn ALLE Recovery-Pfade scheitern
+    ODER die required Keys nach Recovery fehlen, ist es weiterhin `parse_failed`.
+    """
+
+    def test_recovers_single_quotes_in_keys_and_values(self) -> None:
+        # Python-Dict-Style: häufigstes Cursor-Quirk
+        raw = "```json\n{'score': 8, 'verdict': 'green', 'summary': 'looks fine', 'findings': []}\n```"
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertFalse(verdict.parse_failed, f"should recover, got: {verdict.summary}")
+        self.assertEqual(verdict.score, 8)
+        self.assertEqual(verdict.verdict, "green")
+
+    def test_recovers_trailing_comma_in_object(self) -> None:
+        raw = '{"score": 9, "verdict": "green", "summary": "all good", "findings": [],}'
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertFalse(verdict.parse_failed, f"should recover, got: {verdict.summary}")
+        self.assertEqual(verdict.score, 9)
+
+    def test_recovers_trailing_comma_in_array(self) -> None:
+        raw = (
+            '{"score": 8, "verdict": "green", "summary": "ok", '
+            '"findings": [{"severity": "info", "file": "a.py", "line": 1, "msg": "note",},]}'
+        )
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertFalse(verdict.parse_failed, f"should recover, got: {verdict.summary}")
+        self.assertEqual(len(verdict.findings), 1)
+
+    def test_recovers_python_booleans_and_none(self) -> None:
+        # Einige LLMs leaken Python-Literale in "JSON"
+        raw = (
+            '{"score": 8, "verdict": "green", "summary": "x", '
+            '"findings": [], "extra_field": None, "flag": True, "other": False}'
+        )
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertFalse(verdict.parse_failed, f"should recover, got: {verdict.summary}")
+        self.assertEqual(verdict.score, 8)
+
+    def test_recovers_line_comments(self) -> None:
+        raw = """```json
+{
+  // Cursor's internal reasoning
+  "score": 7,
+  "verdict": "soft", // needs attention
+  "summary": "edge case",
+  "findings": []
+}
+```"""
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertFalse(verdict.parse_failed, f"should recover, got: {verdict.summary}")
+        self.assertEqual(verdict.score, 7)
+        self.assertEqual(verdict.verdict, "soft")
+
+    def test_recovery_summary_prefixed_with_recovery_note(self) -> None:
+        # Wenn Recovery applied wurde, MUSS das im summary sichtbar sein
+        # (Audit-Trail — man sieht am Sticky-Comment, dass der Reviewer
+        # schlampiges JSON geliefert hat, ohne dass der PR blockiert wird).
+        raw = "{'score': 8, 'verdict': 'green', 'summary': 'ok', 'findings': []}"
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertFalse(verdict.parse_failed)
+        self.assertIn("recovered", verdict.summary.lower())
+
+    def test_still_fails_when_truly_broken(self) -> None:
+        # Fail-Closed bleibt erhalten für echte Garbage
+        raw = "```json\n{this is not json at all [[[ }}}\n```"
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertTrue(verdict.parse_failed)
+        self.assertEqual(verdict.score, 0)
+
+    def test_still_fails_when_recovered_but_missing_required_keys(self) -> None:
+        # Recovery kann den JSON-Parser zufriedenstellen, aber die Schema-
+        # Validation greift weiterhin — fehlt `verdict`, bleibt es fail-closed.
+        raw = "{'score': 8, 'summary': 'no verdict key'}"
+        verdict = scoring.parse_scored_verdict(raw)
+
+        self.assertTrue(verdict.parse_failed)
+        self.assertIn("missing required key", verdict.summary)
+
+
 class VerdictHelpersTests(unittest.TestCase):
     """verdict_from_score + role-specific threshold rules."""
 
