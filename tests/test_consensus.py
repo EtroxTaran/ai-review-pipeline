@@ -449,8 +449,8 @@ class SecurityWaiverConsensusTests(unittest.TestCase):
     """Wave 7a: Consensus-Logik mit Security-Waiver-Override."""
 
     def test_security_failure_with_waiver_allows_consensus_success(self) -> None:
-        # security=failure + waiver=success → Veto wird übersteuert
-        # (2/3 grün aus code+design reicht dann)
+        # security=failure + waiver=success → Security wird aus dem Voting-Pool
+        # entfernt (behandelt wie "skipped"). code-consensus + design grün bleiben.
         stage_states = {
             common.STATUS_CODE: "success",
             common.STATUS_CODE_CURSOR: "success",
@@ -460,9 +460,8 @@ class SecurityWaiverConsensusTests(unittest.TestCase):
         }
         state, desc = common.consensus_status(stage_states)
         self.assertEqual(state, "success")
-        # security zählt weiter als failure im triple (1 failure aus 3)
-        # aber code+design grün → 2/3 → success
-        self.assertIn("2/3", desc)
+        # Voting-Pool ist nach Waiver nur {code-consensus, design} → 2/2
+        self.assertIn("2/2", desc)
 
     def test_security_failure_without_waiver_still_veto(self) -> None:
         # security=failure + kein waiver → Veto greift (alter Wave-2b Pfad)
@@ -490,9 +489,9 @@ class SecurityWaiverConsensusTests(unittest.TestCase):
         self.assertEqual(state, "success")
 
     def test_waiver_success_but_insufficient_other_grüns_still_fails(self) -> None:
-        # Waiver überschreibt nur Security-Veto, nicht die 2/3-Regel.
-        # Wenn code-consensus=failure + security=failure+waiver + design=success
-        # → nur 1/3 grün → failure
+        # Waiver entfernt Security aus dem Voting-Pool. Andere Stages müssen
+        # trotzdem die Mehrheit haben: wenn code-consensus=failure + design=success
+        # → 1/2 (ohne Security) → failure.
         stage_states = {
             common.STATUS_CODE: "failure",
             common.STATUS_CODE_CURSOR: "failure",
@@ -504,6 +503,34 @@ class SecurityWaiverConsensusTests(unittest.TestCase):
         self.assertEqual(state, "failure")
         # Kein Security-Veto im Grund (weil waivered)
         self.assertNotIn("Security-Veto", desc)
+
+    def test_waiver_removes_security_from_voting_pool(self) -> None:
+        # Regression (entdeckt bei ai-portal PR#45 cleanup):
+        # code-consensus=success + security=failure+waiver + design=skipped
+        # → code-consensus ist die einzig verbleibende voting stage → success.
+        # Vorher: security=failure zählte gegen success_count → 1/2 → failure.
+        stage_states = {
+            common.STATUS_CODE: "success",
+            common.STATUS_CODE_CURSOR: "success",
+            common.STATUS_SECURITY: "failure",
+            common.STATUS_DESIGN: "skipped",
+            common.STATUS_SECURITY_WAIVER: "success",
+        }
+        state, desc = common.consensus_status(stage_states)
+        self.assertEqual(state, "success", f"Expected success, got {state}: {desc}")
+        self.assertNotIn("Security-Veto", desc)
+
+    def test_waiver_plus_design_success_passes(self) -> None:
+        # Klassischer waived-Cleanup: code-consensus + design grün, security waived
+        stage_states = {
+            common.STATUS_CODE: "success",
+            common.STATUS_CODE_CURSOR: "success",
+            common.STATUS_SECURITY: "failure",
+            common.STATUS_DESIGN: "success",
+            common.STATUS_SECURITY_WAIVER: "success",
+        }
+        state, desc = common.consensus_status(stage_states)
+        self.assertEqual(state, "success", f"Expected success, got {state}: {desc}")
 
 
 class ParseScoreEdgeCaseTests(unittest.TestCase):

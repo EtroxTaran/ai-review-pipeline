@@ -412,6 +412,13 @@ def consensus_status(
     if security_state == "failure" and security_waiver_state != "success":
         return "failure", "Security-Veto: ai-review/security = failure"
 
+    # Wenn der Waiver greift, wird Security aus dem Voting-Pool entfernt
+    # (behandelt wie "skipped"). Sonst würde security=failure gegen
+    # success_count zählen und selbst bei waiver das overall-Urteil kippen —
+    # das war ein Bug bis PR#14 (entdeckt bei ai-portal PR#45 Cleanup).
+    if security_state == "failure" and security_waiver_state == "success":
+        triple[STATUS_SECURITY] = "skipped"
+
     completed = {k: v for k, v in triple.items() if v != "skipped"}
     if not completed:
         return "pending", "All stages skipped — no review performed yet"
