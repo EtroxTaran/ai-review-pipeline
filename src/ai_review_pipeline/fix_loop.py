@@ -244,8 +244,16 @@ class ClaudeFixer:
     base_branch: str
     branch: str
     runner: common.Runner = common.default_runner
-    model: str = "claude-opus-4-7"
+    # Policy: fix_loop = Volume-Traffic → Sonnet. Default aus Registry
+    # (resolve_model('fix_loop')). Field-Default ist Legacy-Fallback;
+    # __post_init__ ersetzt None durch aktuellen Registry-Wert.
+    model: str | None = None
     max_iterations: int = 2  # reifung-v2: 4→2 (Circuit-Breaker)
+
+    def __post_init__(self) -> None:
+        if self.model is None:
+            from ai_review_pipeline import models
+            self.model = models.resolve_model("fix_loop")
 
     def _head_sha(self) -> str | None:
         """Liest den aktuellen HEAD-SHA (oder None wenn git fehlschlägt)."""

@@ -31,6 +31,9 @@ REQUIRED_PROMPTS = (
     "security_review.md",
     "design_review.md",
 )
+REQUIRED_REGISTRY_FILES = (
+    "MODEL_REGISTRY.env",
+)
 
 
 def _build_wheel(outdir: Path) -> Path:
@@ -73,6 +76,33 @@ class TestWheelContainsStagePrompts:
                 "hatchling hat die .md-Files nicht ins Paket-Artifact aufgenommen.\n"
                 "Fix: pyproject.toml → [tool.hatch.build.targets.wheel] sicherstellen,\n"
                 "dass packages=['src/ai_review_pipeline'] ohne include-filter gesetzt ist."
+            )
+
+
+class TestWheelContainsModelRegistry:
+    """Regression: registry/MODEL_REGISTRY.env MUSS ins Wheel, sonst wirft
+    resolve_model() zur Laufzeit RegistryMissingError.
+
+    Parallelfall zum Prompt-Packaging-Bug aus PR#8: neue Ressourcen-Files
+    außerhalb von .py-Modulen werden von hatchling nicht automatisch
+    eingepackt, wenn sie nicht unter `src/ai_review_pipeline/` liegen."""
+
+    def test_wheel_ships_model_registry_env(self, tmp_path: Path) -> None:
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        wheel_path = _build_wheel(build_dir)
+
+        with zipfile.ZipFile(wheel_path) as zf:
+            names = set(zf.namelist())
+
+        for registry_file in REQUIRED_REGISTRY_FILES:
+            archive_path = f"ai_review_pipeline/registry/{registry_file}"
+            assert archive_path in names, (
+                f"Registry-Datei fehlt im Wheel: {archive_path}\n"
+                "Ohne MODEL_REGISTRY.env crasht die Pipeline beim ersten "
+                "resolve_model()-Aufruf mit RegistryMissingError.\n"
+                "Fix: Datei muss unter src/ai_review_pipeline/registry/ liegen, "
+                "nicht im Repo-Root-'registry/' (außerhalb des wheel-packages)."
             )
 
 

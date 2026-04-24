@@ -70,10 +70,10 @@ ROLE_TO_REGISTRY_KEY: dict[str, str | None] = {
     "code-cursor":       None,          # cursor-agent CLI default
 }
 
-# Default-Pfad zur committed Registry. Wird relativ zu src/ aufgelöst.
-DEFAULT_REGISTRY_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "registry" / "MODEL_REGISTRY.env"
-)
+# Default-Pfad zur committed Registry. Liegt INNERHALB des Python-Packages,
+# damit `pip install git+https://…@main` das File mitbringt (siehe
+# hatchling wheel config: `packages = ["src/ai_review_pipeline"]`).
+DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parent / "registry" / "MODEL_REGISTRY.env"
 
 # Default-Pfad zum Dev-Override (nur wenn Path existiert — kein Error wenn nicht).
 DEFAULT_DEV_OVERRIDE_PATH = Path.home() / ".openclaw" / "workspace" / "MODEL_REGISTRY.md"
