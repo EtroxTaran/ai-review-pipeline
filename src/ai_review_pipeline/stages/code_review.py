@@ -89,7 +89,7 @@ def _build_config() -> "Any":
         sticky_marker=common.MARKER_CODE_REVIEW,
         title_prefix="🤖 AI Code Review",
         prompt_file="code_review.md",
-        reviewer_label="Codex GPT-5",
+        reviewer_label="Codex",  # Generisch; konkrete Version = codex CLI-Default
         ok_sentinels=("LGTM",),
         reviewer_fn=_codex_reviewer,
         path_filter=None,  # Code-Review läuft immer — kein Path-Filter

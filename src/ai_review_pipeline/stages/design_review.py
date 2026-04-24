@@ -81,7 +81,9 @@ CONFIG = stage.StageConfig(
     sticky_marker=common.MARKER_DESIGN_REVIEW,
     title_prefix="AI Design Review",
     prompt_file="design_review.md",
-    reviewer_label="Claude Opus 4.7 (Design)",
+    # Generisch — konkrete Modell-Version kommt aus resolve_model('design'),
+    # drift-vermeidend. Kein hardcoded Version-Suffix im Label.
+    reviewer_label="Claude (Design)",
     ok_sentinels=("DESIGN-OK",),
     reviewer_fn=_claude_reviewer,
     path_filter=_has_ui_changes,

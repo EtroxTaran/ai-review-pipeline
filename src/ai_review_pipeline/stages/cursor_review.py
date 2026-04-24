@@ -82,7 +82,7 @@ CONFIG = stage.StageConfig(
     sticky_marker=common.MARKER_CODE_CURSOR_REVIEW,
     title_prefix="🐱 AI Code Review (Cursor)",
     prompt_file="cursor_review.md",
-    reviewer_label="Cursor (composer-2)",
+    reviewer_label="Cursor",  # Generisch; konkrete Version = cursor-agent CLI-Default
     ok_sentinels=("LGTM",),
     reviewer_fn=_cursor_reviewer,
     path_filter=None,  # läuft auf jedem PR (zweiter Code-Reviewer)

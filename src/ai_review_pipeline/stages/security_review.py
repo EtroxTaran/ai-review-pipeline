@@ -174,7 +174,9 @@ CONFIG = StageConfig(
     sticky_marker=common.MARKER_SECURITY_REVIEW,
     title_prefix="🔒 AI Security Review",
     prompt_file="security_review.md",
-    reviewer_label="Gemini 2.5 Pro (Security)",
+    # Generisch — konkrete Modell-Version kommt aus resolve_model('security'),
+    # drift-vermeidend. Gemini-Familie ist fix, Version variiert.
+    reviewer_label="Gemini (Security)",
     ok_sentinels=("SEC-OK",),
     reviewer_fn=_gemini_reviewer,
     path_filter=None,  # Security-Review läuft auf jedem PR
