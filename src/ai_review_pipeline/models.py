@@ -49,7 +49,7 @@ class UnknownRoleError(ValueError):
 REQUIRED_REGISTRY_KEYS: frozenset[str] = frozenset({
     "CLAUDE_OPUS", "CLAUDE_SONNET", "CLAUDE_HAIKU",
     "GEMINI_PRO", "GEMINI_FLASH",
-    "OPENAI_CODING",
+    "OPENAI_MAIN",
 })
 
 # Role → Registry-Key. None bedeutet: CLI-Default, kein --model-Flag.
@@ -98,6 +98,19 @@ _KNOWN_VENDOR_PREFIXES: tuple[str, ...] = (
     "cursor/",
 )
 
+# Alias-Map für Key-Naming-Varianten. Der OpenClaw-Workspace-Registry nutzt
+# `ANTHROPIC_*` (provider-prefixed); die ai-review-pipeline-committed-Registry
+# nutzt historisch `CLAUDE_*` (model-family-prefixed). Beide sollen arbeiten.
+# Beim Parsen wird jeder Alias auf die canonical Form (die in REQUIRED_REGISTRY_KEYS)
+# gemapped, damit Dev-Override-Files mit entweder Konvention funktionieren.
+_KEY_ALIASES: dict[str, str] = {
+    "ANTHROPIC_OPUS": "CLAUDE_OPUS",
+    "ANTHROPIC_SONNET": "CLAUDE_SONNET",
+    "ANTHROPIC_HAIKU": "CLAUDE_HAIKU",
+    # OpenAI bleibt konsistent (OPENAI_MAIN ist canonical)
+    # Gemini bleibt konsistent (GEMINI_PRO / GEMINI_FLASH sind canonical)
+}
+
 
 def _strip_vendor_prefix(value: str) -> str:
     """LiteLLM-Style `anthropic/claude-opus-4-6` → `claude-opus-4-6`."""
@@ -138,8 +151,11 @@ def _parse_env_file(path: Path) -> dict[str, str]:
             value = value[1:-1]
         # Strip LiteLLM-Vendor-Prefixes — Vendor-CLIs wollen bare Namen
         value = _strip_vendor_prefix(value)
-        if key:
-            result[key] = value
+        if not key:
+            continue
+        # Alias-Canonicalization: ANTHROPIC_OPUS → CLAUDE_OPUS etc.
+        canonical = _KEY_ALIASES.get(key, key)
+        result[canonical] = value
     return result
 
 

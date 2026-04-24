@@ -38,7 +38,7 @@ class ResolveModelFromRegistryTests(unittest.TestCase):
             "CLAUDE_HAIKU=claude-haiku-9-9\n"
             "GEMINI_PRO=gemini-9.9-pro\n"
             "GEMINI_FLASH=gemini-9-flash\n"
-            "OPENAI_CODING=gpt-9-codex\n"
+            "OPENAI_MAIN=gpt-9-codex\n"
             "CODEX_CLI_VERSION=latest\n"
             "CURSOR_AGENT_CLI_VERSION=latest\n"
         )
@@ -103,7 +103,7 @@ class EnvVarOverrideTests(unittest.TestCase):
             "CLAUDE_SONNET=sonnet-from-registry\n"
             "CLAUDE_HAIKU=haiku-from-registry\n"
             "GEMINI_FLASH=flash-from-registry\n"
-            "OPENAI_CODING=codex-from-registry\n"
+            "OPENAI_MAIN=codex-from-registry\n"
             "CODEX_CLI_VERSION=latest\n"
             "CURSOR_AGENT_CLI_VERSION=latest\n"
         )
@@ -145,7 +145,7 @@ class DevOverrideFileTests(unittest.TestCase):
             "CLAUDE_SONNET=sonnet-committed\n"
             "CLAUDE_HAIKU=haiku-committed\n"
             "GEMINI_FLASH=flash-committed\n"
-            "OPENAI_CODING=codex-committed\n"
+            "OPENAI_MAIN=codex-committed\n"
             "CODEX_CLI_VERSION=latest\n"
             "CURSOR_AGENT_CLI_VERSION=latest\n"
         )
@@ -206,7 +206,7 @@ class FailSafeTests(unittest.TestCase):
                 "CLAUDE_HAIKU=haiku\n"
                 "GEMINI_PRO=gemini\n"
                 "GEMINI_FLASH=flash\n"
-                "OPENAI_CODING=codex\n"
+                "OPENAI_MAIN=codex\n"
                 "CODEX_CLI_VERSION=latest\n"
                 "CURSOR_AGENT_CLI_VERSION=latest\n"
             )
@@ -219,7 +219,7 @@ class FailSafeTests(unittest.TestCase):
             reg = Path(tmp) / "ok.env"
             reg.write_text(
                 "CLAUDE_OPUS=x\nCLAUDE_SONNET=x\nCLAUDE_HAIKU=x\n"
-                "GEMINI_PRO=x\nGEMINI_FLASH=x\nOPENAI_CODING=x\n"
+                "GEMINI_PRO=x\nGEMINI_FLASH=x\nOPENAI_MAIN=x\n"
                 "CODEX_CLI_VERSION=latest\nCURSOR_AGENT_CLI_VERSION=latest\n"
             )
             with self.assertRaises(models.UnknownRoleError):
@@ -264,6 +264,46 @@ class RegistryParserTests(unittest.TestCase):
             f.write_text("KEY=value\nthis is garbage\nOTHER=thing\n")
             parsed = models._parse_env_file(f)
             self.assertEqual(parsed, {"KEY": "value", "OTHER": "thing"})
+
+    def test_canonicalizes_anthropic_aliases(self) -> None:
+        # Regression: OpenClaw-Workspace-Registry nutzt ANTHROPIC_*, die Pipeline
+        # erwartet CLAUDE_*. Parser muss aliasen beim Einlesen.
+        with TemporaryDirectory() as tmp:
+            f = Path(tmp) / "r.env"
+            f.write_text(
+                "ANTHROPIC_OPUS=claude-opus-4-7\n"
+                "ANTHROPIC_SONNET=claude-sonnet-4-6\n"
+                "ANTHROPIC_HAIKU=claude-haiku-4-5\n"
+            )
+            parsed = models._parse_env_file(f)
+            self.assertEqual(parsed["CLAUDE_OPUS"], "claude-opus-4-7")
+            self.assertEqual(parsed["CLAUDE_SONNET"], "claude-sonnet-4-6")
+            self.assertEqual(parsed["CLAUDE_HAIKU"], "claude-haiku-4-5")
+            # Canonical keys nicht doppelt (alias ersetzt den Original-Namen)
+            self.assertNotIn("ANTHROPIC_OPUS", parsed)
+
+    def test_dev_override_with_anthropic_keys_works(self) -> None:
+        # End-to-End: Dev-Override nutzt ANTHROPIC_*, resolve_model findet's
+        with TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "committed.env"
+            registry.write_text(
+                "CLAUDE_OPUS=committed-opus\nCLAUDE_SONNET=s\nCLAUDE_HAIKU=h\n"
+                "GEMINI_PRO=g\nGEMINI_FLASH=gf\nOPENAI_MAIN=om\n"
+                "CODEX_CLI_VERSION=latest\nCURSOR_AGENT_CLI_VERSION=latest\n"
+            )
+            override = Path(tmp) / "override.md"
+            override.write_text("ANTHROPIC_OPUS=dev-override-opus-9-9\n")
+
+            for key in list(os.environ.keys()):
+                if key.startswith("AI_REVIEW_MODEL_"):
+                    del os.environ[key]
+
+            model = models.resolve_model(
+                "design",
+                registry_path=registry,
+                dev_override_path=override,
+            )
+            self.assertEqual(model, "dev-override-opus-9-9")
 
     def test_strips_litellm_vendor_prefixes(self) -> None:
         # LiteLLM-Style wie `anthropic/claude-opus-4-6` → `claude-opus-4-6`
